@@ -1,30 +1,144 @@
-*.rar
+# -----------------------------------------------------------------------------
+# Build systems (CMake / Ninja / Make)
+# -----------------------------------------------------------------------------
+/build/
+/out/
+/cmake-build-*/
+/Debug/
+/Release/
+/RelWithDebInfo/
+/MinSizeRel/
+
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+install_manifest.txt
+compile_commands.json
+build.ninja
+rules.ninja
+.ninja_deps
+.ninja_log
+Testing/
+_deps/
+
+# User-local CMake settings; keep the shared CMakePresets.json versioned.
+CMakeUserPresets.json
+
+# Project metadata required to reproduce/regenerate the firmware project.
+# These exceptions also override common global IDE ignore rules.
+!/.settings/
+!/.settings/**
+!/.mxproject
+!/*.ioc
+!/.clangd
+!/CMakePresets.json
+
+# -----------------------------------------------------------------------------
+# Compiler, linker, firmware and coverage outputs
+# -----------------------------------------------------------------------------
 *.o
+*.obj
 *.d
-*.crf
-*.htm
-*.dep
+*.su
+*.a
+*.lib
+*.elf
+*.axf
+*.out
+*.hex
+*.bin
+*.dfu
+*.srec
+*.s19
+*.mot
 *.map
-*.bak
-*.lnp
 *.lst
-*.ini
-*.iex
-*.sct
-*.scvd
-*.uvguix
-*.dbg*
+*.lss
+*.sym
+*.dis
+*.gcno
+*.gcda
+*.gcov
+
+# -----------------------------------------------------------------------------
+# STM32CubeMX / STM32CubeIDE / embedded-tool caches
+# Keep *.ioc, .mxproject, linker scripts, startup files and .settings/ tracked.
+# -----------------------------------------------------------------------------
+/mx.scratch/
+/Objects/
+/Listings/
+/.metadata/
+/.recommenders/
 *.uvguix.*
-.mxproject
- 
-RTE/
-Templates/
-Examples/
- 
-!*.uvprojx
-!*.h
-!*.c
-!*.ioc
-!*.axf
-!*.bin
-!*.hex
+*.build_log.htm
+*.crf
+*.lnp
+*.iex
+*.scvd
+*.cyclo
+
+# Debugger/probe session files and logs (debug launch configurations stay tracked).
+.gdb_history
+openocd.log
+JLinkLog.txt
+*.jlink
+
+# -----------------------------------------------------------------------------
+# Editors and language-server caches
+# -----------------------------------------------------------------------------
+/.cache/
+/.clangd/
+/.history/
+/.idea/
+/.vs/
+
+# Keep the useful shared VS Code configuration, ignore local/extension state.
+/.vscode/*
+!/.vscode/settings.json
+!/.vscode/c_cpp_properties.json
+!/.vscode/extensions.json
+!/.vscode/launch.json
+!/.vscode/tasks.json
+
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# -----------------------------------------------------------------------------
+# Python helper-script caches and virtual environments
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+/.pytest_cache/
+/.mypy_cache/
+/.ruff_cache/
+/.venv/
+/venv/
+
+# -----------------------------------------------------------------------------
+# Local environment, temporary files and operating-system metadata
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+*.log
+*.trace
+*.stackdump
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*.orig
+*.rej
+*~
+.#*
+
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
