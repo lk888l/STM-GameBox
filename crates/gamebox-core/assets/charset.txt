@@ -1,0 +1,8 @@
+# Every non-ASCII, non-whitespace character on this file is packed into Flash.
+# Keep product copy here so a missing glyph fails generation instead of failing at runtime.
+游戏机 工具 设置 关机 返回
+贪吃蛇 秒表 倒计时
+静音 动画速度 光标风格 刷新时间
+开 关 快 慢 反相 矩形 爱心
+得分 最高 游戏结束 请按键 退出
+
