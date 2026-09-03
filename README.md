@@ -115,6 +115,29 @@ cargo clippy --locked -p gamebox-f103-firmware --bin gamebox-f103 -- -D warnings
 cargo build --locked --release -p gamebox-f103-firmware --bin gamebox-f103
 ~~~
 
+Release 构建默认生成可直接烧录的 ELF（文件名没有扩展名）：
+
+~~~text
+target/thumbv7m-none-eabi/release/gamebox-f103
+~~~
+
+如需发布裸二进制 `.bin`，在构建后执行：
+
+~~~powershell
+arm-none-eabi-objcopy -O binary target/thumbv7m-none-eabi/release/gamebox-f103 target/thumbv7m-none-eabi/release/gamebox-f103.bin
+~~~
+
+裸二进制的 Flash 基地址为 `0x08000000`。
+
+串口烧录软件优先使用带地址信息的 Intel HEX：
+
+~~~powershell
+arm-none-eabi-objcopy -O ihex target/thumbv7m-none-eabi/release/gamebox-f103 target/thumbv7m-none-eabi/release/gamebox-f103.hex
+~~~
+
+生成的 `gamebox-f103.hex` 已包含 `0x08000000` Flash 地址，烧录软件无需再猜测裸文件的
+起始地址。
+
 工作区默认目标是 thumbv7m-none-eabi；font-subset 是主机工具，因此不要直接用无目标覆盖的
 cargo check --workspace。
 
@@ -137,8 +160,20 @@ Release 关闭全局整数溢出检查以满足 Cortex-M3 体积预算；所有�
 probe-rs download --chip STM32F103C8Tx --protocol swd --speed 100 --verify --disable-progressbars target/thumbv7m-none-eabi/release/gamebox-f103
 ~~~
 
+也可以烧录上面生成的裸二进制；此时必须显式指定格式和基地址：
+
+~~~powershell
+probe-rs download --chip STM32F103C8Tx --protocol swd --speed 100 --verify --disable-progressbars --binary-format bin --base-address 0x08000000 target/thumbv7m-none-eabi/release/gamebox-f103.bin
+~~~
+
 本板的 NRST 连接不适合 probe-rs 的 connect-under-reset 下载；普通 SWD 附着已完成写后
-校验。若探针误报低电压，只能在芯片识别、写入和 verify 均成功且实际供电已确认时忽略。
+校验。`probe-rs 0.31.0` 没有“忽略目标电压”的命令行选项，但上面两条命令本来就不会
+因 `Target voltage (VAPP)` 警告而退出；该警告只是一条 `WARN`，工具会继续连接、写入和
+verify。只有在芯片识别、写入和 verify 均成功且实际供电已确认时才可忽略它。
+
+`No connected probes were found` 或 `JtagGetIdcodeError` 不是电压警告：前者表示电脑没有
+枚举到 ST-Link，后者表示 SWD 没有读到芯片 ID。这两种错误都发生在写入前，不能通过隐藏
+电压警告来跳过。
 
 查看 RTT：
 
