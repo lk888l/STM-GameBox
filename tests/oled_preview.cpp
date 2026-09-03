@@ -86,7 +86,7 @@ void renderHomeCard(Canvas& canvas, const std::uint8_t index, const std::int16_t
     formatPosition(index, home->count, position);
 
     canvas.roundedRectangle(static_cast<std::int16_t>(x_offset + 2), 1, 124, 62, 3);
-    canvas.drawText(static_cast<std::int16_t>(x_offset + 7), 3, "GAMEBOX");
+    canvas.drawText(static_cast<std::int16_t>(x_offset + 7), 3, "12:34:56");
     canvas.fillRoundedRectangle(static_cast<std::int16_t>(x_offset + 92), 2, 32, 9, 2);
     canvas.drawText(static_cast<std::int16_t>(x_offset + 93), 3, position, true);
     canvas.horizontalLine(static_cast<std::int16_t>(x_offset + 4), 12, 120);
@@ -137,7 +137,7 @@ void renderList(Canvas& canvas, const View view, const std::uint8_t selected)
         }
         canvas.drawText(8, y, menu->entries[item].label);
         if (view == View::settings) {
-            constexpr const char* values[] = {"ON", "FULL", "MAX", ""};
+            constexpr const char* values[] = {"ON", "FULL", "MAX", "TIME", ""};
             const char* const value = values[item];
             std::size_t length = 0U;
             while (value[length] != '\0') { ++length; }
@@ -246,7 +246,7 @@ int main(int argc, char** argv)
     renderHomeCard(panels[1], 0U, -84);
     renderHomeCard(panels[1], 1U, 44);
     renderList(panels[2], View::games, 2U);
-    renderList(panels[3], View::settings, 1U);
+    renderList(panels[3], View::settings, 3U);
     const std::string output = argc > 1 ? argv[1] : "oled_menu_preview.bmp";
     if (!writePreview(output, panels)) {
         std::cerr << "Unable to write " << output << '\n';

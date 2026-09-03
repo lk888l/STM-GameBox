@@ -51,6 +51,7 @@ enum class Action : std::uint8_t {
     toggle_sound,
     cycle_motion,
     cycle_brightness,
+    cycle_home_header,
     unavailable,
 };
 

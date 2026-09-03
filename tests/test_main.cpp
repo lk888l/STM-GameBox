@@ -294,6 +294,23 @@ void testGameMenu()
     }
 }
 
+void testSettingsMenu()
+{
+    using gamebox::ui::Action;
+    using gamebox::ui::View;
+    const gamebox::ui::MenuDefinition* const settings =
+        gamebox::ui::menuFor(View::settings);
+    check(settings != nullptr, "settings menu must exist");
+    if (settings == nullptr) {
+        return;
+    }
+    check(settings->count == 5U,
+          "settings menu must expose the configurable home header");
+    check(gamebox::ui::entryAt(View::settings, 3U).action ==
+              Action::cycle_home_header,
+          "home-header setting must remain device-accessible");
+}
+
 void testCanvas()
 {
     gamebox::display::Canvas canvas;
@@ -341,7 +358,12 @@ void testCanvas()
 
 void testSettingsCodec()
 {
-    const gamebox::storage::SettingsData expected{false, 2U, 1U};
+    const gamebox::storage::SettingsData expected{
+        false,
+        2U,
+        1U,
+        gamebox::storage::HomeHeaderMode::pet,
+    };
     const std::uint16_t encoded = gamebox::storage::SettingsCodec::encode(expected);
     const std::uint16_t checkword = gamebox::storage::SettingsCodec::checkword(encoded);
     gamebox::storage::SettingsData decoded{};
@@ -349,18 +371,25 @@ void testSettingsCodec()
           "valid persisted settings must decode");
     check(decoded.sound_enabled == expected.sound_enabled &&
               decoded.motion_level == expected.motion_level &&
-              decoded.brightness_level == expected.brightness_level,
+              decoded.brightness_level == expected.brightness_level &&
+              decoded.home_header_mode == expected.home_header_mode,
           "persisted settings must round-trip without loss");
     check(!gamebox::storage::SettingsCodec::decode(encoded,
                                                     static_cast<std::uint16_t>(checkword ^ 1U),
                                                     decoded),
           "corrupted persisted settings must be rejected");
-    const std::uint16_t unknown_flags = static_cast<std::uint16_t>(encoded | 0x0020U);
+    const std::uint16_t unknown_flags = static_cast<std::uint16_t>(encoded | 0x0080U);
     check(!gamebox::storage::SettingsCodec::decode(
               unknown_flags,
               gamebox::storage::SettingsCodec::checkword(unknown_flags),
               decoded),
-          "unknown settings flags must be rejected by the current schema");
+              "unknown settings flags must be rejected by the current schema");
+
+    const gamebox::storage::SettingsData legacy_compatible{false, 2U, 1U};
+    const std::uint16_t legacy_encoded =
+        gamebox::storage::SettingsCodec::encode(legacy_compatible);
+    check((legacy_encoded & 0x0060U) == 0U,
+          "zero-valued legacy header bits must select the default time header");
 }
 
 void testCalendarCodec()
@@ -514,6 +543,7 @@ int main()
     testTetrisModel();
     testPongModel();
     testGameMenu();
+    testSettingsMenu();
     testCanvas();
     testSettingsCodec();
     testCalendarCodec();

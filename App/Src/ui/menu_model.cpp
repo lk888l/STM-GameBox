@@ -31,6 +31,7 @@ constexpr MenuEntry kSettingEntries[] = {
     {"SOUND", "Buzzer feedback", Icon::speaker, Action::toggle_sound, View::settings},
     {"MOTION", "Animation level", Icon::motion, Action::cycle_motion, View::settings},
     {"BRIGHTNESS", "OLED contrast", Icon::brightness, Action::cycle_brightness, View::settings},
+    {"HOME HEADER", "Time date pet title", Icon::clock, Action::cycle_home_header, View::settings},
     {"ABOUT", "Firmware details", Icon::info, Action::open, View::about},
 };
 

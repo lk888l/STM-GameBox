@@ -11,6 +11,12 @@ constexpr std::uint8_t kVisibleRows = 3U;
 constexpr std::int16_t kFirstRowY = 14;
 constexpr std::int16_t kRowHeight = 16;
 constexpr std::int16_t kSelectionHeight = 15;
+constexpr std::uint16_t kPetFrames[2][9] = {
+    {0x0900U, 0x0F80U, 0x0BC2U, 0x0FFDU, 0x07FEU,
+     0x07F8U, 0x01F8U, 0x0148U, 0x0244U},
+    {0x0900U, 0x0F80U, 0x0BC2U, 0x0FFDU, 0x07FEU,
+     0x07F8U, 0x01F8U, 0x0250U, 0x0290U},
+};
 static_assert(configTICK_RATE_HZ == 1000U,
               "GameBox timing assumes one FreeRTOS tick equals one millisecond");
 
@@ -34,6 +40,18 @@ void formatTime(const std::uint32_t total_seconds, char (&output)[9])
     output[5] = ':';
     formatTwoDigits(seconds, &output[6]);
     output[8] = '\0';
+}
+
+void formatDate(const storage::CalendarDate& date, char (&output)[11])
+{
+    output[0] = '2';
+    output[1] = '0';
+    formatTwoDigits(date.year, &output[2]);
+    output[4] = '-';
+    formatTwoDigits(date.month, &output[5]);
+    output[7] = '-';
+    formatTwoDigits(date.day, &output[8]);
+    output[10] = '\0';
 }
 
 etl::string_view unsignedText(std::uint32_t value, char (&buffer)[11])
@@ -128,6 +146,7 @@ bool UiService::prepare(const std::uint32_t boot_seed)
         sound_enabled_ = stored.sound_enabled;
         motion_ = static_cast<MotionLevel>(stored.motion_level);
         brightness_level_ = stored.brightness_level;
+        home_header_mode_ = stored.home_header_mode;
     } else {
         persistSettings();
     }
@@ -423,6 +442,7 @@ void UiService::activateSelection(const std::uint32_t now_ms)
     case Action::toggle_sound:
     case Action::cycle_motion:
     case Action::cycle_brightness:
+    case Action::cycle_home_header:
         setSetting(entry.action, now_ms);
         break;
     case Action::unavailable:
@@ -461,6 +481,12 @@ void UiService::setSetting(const Action action, const std::uint32_t now_ms)
         showToast(settingValue(action), now_ms);
         break;
     }
+    case Action::cycle_home_header: {
+        const auto next = static_cast<std::uint8_t>(home_header_mode_) + 1U;
+        home_header_mode_ = static_cast<storage::HomeHeaderMode>(next % 4U);
+        showToast(settingValue(action), now_ms);
+        break;
+    }
     default:
         break;
     }
@@ -473,6 +499,7 @@ void UiService::persistSettings()
         sound_enabled_,
         static_cast<std::uint8_t>(motion_),
         brightness_level_,
+        home_header_mode_,
     };
     (void)settings_.save(data);
 }
@@ -489,6 +516,14 @@ const char* UiService::settingValue(const Action action) const
         constexpr const char* values[] = {"LOW", "MED", "HIGH", "MAX"};
         return values[brightness_level_];
     }
+    case Action::cycle_home_header:
+        switch (home_header_mode_) {
+        case storage::HomeHeaderMode::time: return "TIME";
+        case storage::HomeHeaderMode::date: return "DATE";
+        case storage::HomeHeaderMode::pet: return "PET";
+        case storage::HomeHeaderMode::title: return "TITLE";
+        }
+        return "TIME";
     default: return "";
     }
 }
@@ -936,7 +971,7 @@ void UiService::renderView(const View view,
                            const bool interactive)
 {
     switch (view) {
-    case View::home: renderHome(x_offset, interactive); break;
+    case View::home: renderHome(x_offset, now_ms, interactive); break;
     case View::games:
     case View::tools:
     case View::settings: renderList(view, x_offset, interactive); break;
@@ -971,7 +1006,9 @@ void UiService::renderFooter(const std::int16_t x_offset, const etl::string_view
     canvas_.drawText(static_cast<std::int16_t>(x_offset + 4), 56, hint);
 }
 
-void UiService::renderHome(const std::int16_t x_offset, const bool interactive)
+void UiService::renderHome(const std::int16_t x_offset,
+                           const std::uint32_t now_ms,
+                           const bool interactive)
 {
     const std::uint8_t selected = selections_[viewIndex(View::home)];
     if (interactive && !carousel_spring_.settled()) {
@@ -980,18 +1017,21 @@ void UiService::renderHome(const std::int16_t x_offset, const bool interactive)
             current_x - carousel_direction_ * display::Canvas::kWidth);
         renderHomeCard(entryAt(View::home, carousel_previous_),
                        carousel_previous_,
-                       static_cast<std::int16_t>(x_offset + previous_x));
+                       static_cast<std::int16_t>(x_offset + previous_x),
+                       now_ms);
         renderHomeCard(entryAt(View::home, selected),
                        selected,
-                       static_cast<std::int16_t>(x_offset + current_x));
+                       static_cast<std::int16_t>(x_offset + current_x),
+                       now_ms);
     } else {
-        renderHomeCard(entryAt(View::home, selected), selected, x_offset);
+        renderHomeCard(entryAt(View::home, selected), selected, x_offset, now_ms);
     }
 }
 
 void UiService::renderHomeCard(const MenuEntry& entry,
                                const std::uint8_t index,
-                               const std::int16_t x_offset)
+                               const std::int16_t x_offset,
+                               const std::uint32_t now_ms)
 {
     const MenuDefinition* const home = menuFor(View::home);
     char position[6]{};
@@ -1000,7 +1040,7 @@ void UiService::renderHomeCard(const MenuEntry& entry,
     // One almost-full-screen surface replaces the old header/card/footer
     // sandwich. Every vertical band now carries useful category information.
     canvas_.roundedRectangle(static_cast<std::int16_t>(x_offset + 2), 1, 124, 62, 3);
-    canvas_.drawText(static_cast<std::int16_t>(x_offset + 7), 3, "GAMEBOX");
+    renderHomeHeader(x_offset, now_ms);
     canvas_.fillRoundedRectangle(static_cast<std::int16_t>(x_offset + 92), 2, 32, 9, 2);
     canvas_.drawText(static_cast<std::int16_t>(x_offset + 93), 3, position, true);
     canvas_.horizontalLine(static_cast<std::int16_t>(x_offset + 4), 12, 120);
@@ -1030,6 +1070,95 @@ void UiService::renderHomeCard(const MenuEntry& entry,
     }
     canvas_.drawText(static_cast<std::int16_t>(x_offset + 42), 52, "<> MOVE");
     canvas_.drawText(static_cast<std::int16_t>(x_offset + 92), 52, "ENTER");
+}
+
+void UiService::refreshClock(const std::uint32_t now_ms)
+{
+    if (clock_editing_ ||
+        (clock_snapshot_valid_ &&
+         static_cast<std::int32_t>(now_ms - clock_next_refresh_ms_) < 0)) {
+        return;
+    }
+    clock_snapshot_valid_ = calendar_.read(clock_snapshot_);
+    // Polling four times per second makes the visible second rollover prompt,
+    // while the OLED shadow still sends data only when the text actually changes.
+    clock_next_refresh_ms_ = now_ms + 250U;
+}
+
+void UiService::renderHomeHeader(const std::int16_t x_offset,
+                                 const std::uint32_t now_ms)
+{
+    switch (home_header_mode_) {
+    case storage::HomeHeaderMode::time: {
+        refreshClock(now_ms);
+        if (!clock_snapshot_valid_) {
+            canvas_.drawText(static_cast<std::int16_t>(x_offset + 7), 3, "RTC ERR");
+            return;
+        }
+        char time_text[9]{};
+        formatTime(static_cast<std::uint32_t>(clock_snapshot_.hours) * 3600U +
+                       static_cast<std::uint32_t>(clock_snapshot_.minutes) * 60U +
+                       clock_snapshot_.seconds,
+                   time_text);
+        canvas_.drawText(static_cast<std::int16_t>(x_offset + 7), 3, time_text);
+        break;
+    }
+    case storage::HomeHeaderMode::date: {
+        refreshClock(now_ms);
+        if (!clock_snapshot_valid_) {
+            canvas_.drawText(static_cast<std::int16_t>(x_offset + 7), 3, "RTC ERR");
+            return;
+        }
+        char date_text[11]{};
+        formatDate(clock_snapshot_.date, date_text);
+        canvas_.drawText(static_cast<std::int16_t>(x_offset + 7), 3, date_text);
+        break;
+    }
+    case storage::HomeHeaderMode::pet:
+        renderHomePet(x_offset, now_ms);
+        break;
+    case storage::HomeHeaderMode::title:
+        canvas_.drawText(static_cast<std::int16_t>(x_offset + 7), 3, "GAMEBOX");
+        break;
+    }
+}
+
+void UiService::renderHomePet(const std::int16_t x_offset,
+                              const std::uint32_t now_ms)
+{
+    constexpr std::uint32_t travel_steps = 36U;
+    std::uint32_t frame_period_ms = 0U;
+    if (motion_ == MotionLevel::full) {
+        frame_period_ms = 250U;
+    } else if (motion_ == MotionLevel::reduced) {
+        frame_period_ms = 500U;
+    }
+
+    std::uint32_t phase = travel_steps / 2U;
+    std::uint32_t animation_frame = 0U;
+    if (frame_period_ms != 0U) {
+        const std::uint32_t tick = now_ms / frame_period_ms;
+        phase = tick % (travel_steps * 2U);
+        animation_frame = tick & 1U;
+    }
+    const bool facing_right = phase < travel_steps;
+    const std::uint32_t step =
+        facing_right ? phase : (travel_steps * 2U - 1U - phase);
+    const std::int16_t pet_x = static_cast<std::int16_t>(
+        x_offset + 7 + static_cast<std::int16_t>(step * 2U));
+
+    for (std::uint8_t row = 0U; row < 9U; ++row) {
+        const std::uint16_t pixels = kPetFrames[animation_frame][row];
+        for (std::uint8_t column = 0U; column < 12U; ++column) {
+            if ((pixels & static_cast<std::uint16_t>(1U << column)) == 0U) {
+                continue;
+            }
+            const std::uint8_t mirrored =
+                facing_right ? column : static_cast<std::uint8_t>(11U - column);
+            canvas_.pixel(static_cast<std::int16_t>(pet_x + mirrored),
+                          static_cast<std::int16_t>(2 + row));
+        }
+    }
 }
 
 void UiService::renderList(const View view,
@@ -1098,21 +1227,14 @@ void UiService::renderList(const View view,
 
 void UiService::renderClock(const std::int16_t x_offset, const std::uint32_t now_ms)
 {
-    if (!clock_editing_ &&
-        (!clock_snapshot_valid_ ||
-         static_cast<std::int32_t>(now_ms - clock_next_refresh_ms_) >= 0)) {
-        clock_snapshot_valid_ = calendar_.read(clock_snapshot_);
-        clock_next_refresh_ms_ = now_ms + 250U;
-    }
+    refreshClock(now_ms);
     const platform::DateTime& shown = clock_editing_ ? clock_edit_ : clock_snapshot_;
     char time_text[9]{};
     formatTime(static_cast<std::uint32_t>(shown.hours) * 3600U +
                    static_cast<std::uint32_t>(shown.minutes) * 60U + shown.seconds,
                time_text);
-    char date_text[] = "20YY-MM-DD";
-    formatTwoDigits(shown.date.year, &date_text[2]);
-    formatTwoDigits(shown.date.month, &date_text[5]);
-    formatTwoDigits(shown.date.day, &date_text[8]);
+    char date_text[11]{};
+    formatDate(shown.date, date_text);
 
     renderHeader(x_offset, clock_editing_ ? "CLOCK SET" : "CLOCK");
     if (clock_snapshot_valid_ || clock_editing_) {

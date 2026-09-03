@@ -71,10 +71,13 @@ private:
                     std::int16_t x_offset,
                     std::uint32_t now_ms,
                     bool interactive);
-    void renderHome(std::int16_t x_offset, bool interactive);
+    void renderHome(std::int16_t x_offset, std::uint32_t now_ms, bool interactive);
     void renderHomeCard(const MenuEntry& entry,
                         std::uint8_t index,
-                        std::int16_t x_offset);
+                        std::int16_t x_offset,
+                        std::uint32_t now_ms);
+    void renderHomeHeader(std::int16_t x_offset, std::uint32_t now_ms);
+    void renderHomePet(std::int16_t x_offset, std::uint32_t now_ms);
     void renderList(View view,
                     std::int16_t x_offset,
                     bool interactive);
@@ -103,6 +106,7 @@ private:
     void setSetting(Action action, std::uint32_t now_ms);
     void persistSettings();
     [[nodiscard]] const char* settingValue(Action action) const;
+    void refreshClock(std::uint32_t now_ms);
     void stepMotion();
     void syncListMotion(View view);
     [[nodiscard]] SpringSpeed springSpeed() const;
@@ -144,6 +148,7 @@ private:
     MotionLevel motion_{MotionLevel::full};
     bool sound_enabled_{true};
     std::uint8_t brightness_level_{3U};
+    storage::HomeHeaderMode home_header_mode_{storage::HomeHeaderMode::time};
 
     bool stopwatch_running_{false};
     std::uint32_t stopwatch_started_ms_{0U};

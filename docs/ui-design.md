@@ -24,6 +24,7 @@ GAMEBOX
    ├─ Sound
    ├─ Motion: Full / Reduced / Off
    ├─ Brightness: Low / Med / High / Max
+   ├─ Home Header: Time / Date / Pet / Title
    └─ About
 ```
 
@@ -34,6 +35,7 @@ GAMEBOX
 ## 视觉系统
 
 - 主页使用 124×62 的近全屏卡片，把品牌、`当前/总数`、24×16 程序化图标、标题、说明、分页点和操作提示全部收进同一表面；
+- 主页左上顶栏默认显示 RTC 时间，也可在 Settings → Home Header 切换为日期、行走像素宠物或原 `GAMEBOX` 品牌字样；选择随其他设置一起写入 backup register；
 - 主页不再叠加独立标题栏和底栏，原先空置的上下区域现在都承载信息；
 - 分类列表使用 11 px 紧凑标题轨、3 个 16 px 高的内容行和右侧全高位置条，底边可露出下一项作为滚动提示；
 - 列表选择使用随标题宽度变化的反相 pill，移动、宽度变化和列表滚动彼此独立；
@@ -69,3 +71,5 @@ Clock 页以 2× 数字显示时间。Enter/Jump 进入编辑后，闪烁下划�
 ## 帧率与总线预算
 
 UI 目标周期 33 ms，约 30 FPS。SSD1306 在 400 kHz I2C 上全屏约需 24 ms，因此动画帧可完成全屏传输；静态页面由于 shadow 比较通常不产生数据传输。运行期页面通过 I2C TX DMA 发送，UI 任务等待信号量时会让出 CPU。输入任务独立以 5 ms 运行，不会被 OLED 总线传输影响消抖。
+
+主页 RTC 只以 4 Hz 读取几个寄存器，秒数字实际每秒变化一次；shadow 比较后仅顶栏跨越的两个 OLED page 会发送，约占 400 kHz I2C 带宽的 0.6%。Pet 在 Full/Reduced 下分别以 4/2 FPS 移动，约占 2.4%/1.2% 总线带宽；Motion Off 时宠物静止。各模式仍沿用已有的 30 FPS 画布循环，不增加任务、堆或中断。

@@ -8,12 +8,12 @@
 
 ## 已完成的重构
 
-- 128×64 SSD1306 OLED：卡片式主页、二级游戏菜单、列表滚动、非阻塞动画、Toast 和逐页差分刷新；
+- 128×64 SSD1306 OLED：卡片式主页、可配置的时间/日期/宠物/品牌顶栏、二级游戏菜单、列表滚动、非阻塞动画、Toast 和逐页差分刷新；
 - 8 键统一输入：20 ms 消抖以及 Pressed、Released、Click、DoubleClick、LongPress、Repeat 语义事件；
 - 四路 DMA：OLED I2C 发送、USART1 诊断发送、ADC 熵采样、TIM3 驱动蜂鸣器 GPIO 波形；
 - 串口观察者/发布订阅：`InputService` 发布事件，`UartDmaService` 订阅后通过固定队列解耦，再由 DMA 输出；
 - RTC 时钟与校时、秒表、倒计时、Input Lab、System 运行状态页；
-- 声音、动画等级、OLED 亮度和 STM32F1 软件日期通过 RTC Backup Register 持久化；
+- 声音、动画等级、OLED 亮度、主页顶栏模式和 STM32F1 软件日期通过 RTC Backup Register 持久化；
 - 所有任务、队列、信号量、画布、游戏状态和字符串均为静态容量，运行期不使用堆；
 - Debug/Release 都以严格告警构建，链接后自动检查是否意外引入堆符号。
 
@@ -49,6 +49,7 @@ DMA1 Channel 1/4/6、I2C1 EV/ER 和 USART1 中断优先级均为 6，满足 Free
 
 - 主页：方向键切换卡片，Enter 或 Jump 确认；
 - 列表：Up/Down 选择，Enter 或 Jump 确认，Back 返回；
+- Settings → Home Header：用 Left/Right、Enter 或 Jump 在 Time、Date、Pet、Title 间切换，断电保留；
 - 长按 Func：在非游戏页面打开 Input Lab；
 - 双击 Func：在非游戏页面快速打开时钟；
 - 时钟：Enter/Jump 进入校时，Left/Right 选字段，Up/Down 调整，Enter/Jump 保存，Back/Func 取消；
@@ -188,7 +189,7 @@ Arm GNU 15.2.1 的最近一次完整构建结果：
 
 | 配置 | Flash | SRAM | 说明 |
 |---|---:|---:|---|
-| Debug (`-Og -g3`) | 60,232 B / 64 KiB（91.91%） | 11,464 B / 20 KiB（55.98%） | 可调试、无 LTO |
-| Release (`-Os -flto`) | 43,596 B / 64 KiB（66.52%） | 11,448 B / 20 KiB（55.90%） | 推荐烧录 |
+| Debug (`-Og -g3`) | 60,988 B / 64 KiB（93.06%） | 11,464 B / 20 KiB（55.98%） | 可调试、无 LTO |
+| Release (`-Os -flto`) | 44,132 B / 64 KiB（67.34%） | 11,448 B / 20 KiB（55.90%） | 推荐烧录 |
 
 RAM 数字已包含链接器保留的 1 KiB 栈。Debug 的 Flash 余量较小，后续新增大字库或图片资源前应优先检查 Release 预算，并持续保留 Debug 可链接能力。

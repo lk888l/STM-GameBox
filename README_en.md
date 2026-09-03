@@ -8,12 +8,12 @@ The firmware now contains all six legacy game categories: Dino, Snake, Air Raid,
 
 ## Delivered Refactor
 
-- Redesigned 128×64 SSD1306 UI with home cards, a six-game menu, scrolling lists, non-blocking transitions, toasts, and page-differential refresh;
+- Redesigned 128×64 SSD1306 UI with home cards, a configurable time/date/pet/brand header, a six-game menu, scrolling lists, non-blocking transitions, toasts, and page-differential refresh;
 - Unified eight-button input with 20 ms debounce and Pressed, Released, Click, DoubleClick, LongPress, and Repeat events;
 - Four DMA paths: OLED I2C TX, USART1 diagnostic TX, ADC entropy sampling, and TIM3-paced buzzer GPIO edges;
 - Observer/pub-sub telemetry: `InputService` publishes events, `UartDmaService` subscribes through a fixed queue, and USART sends with DMA;
 - Adjustable RTC clock, stopwatch, countdown, Input Lab, and runtime System page;
-- RTC Backup Register persistence for sound, motion, brightness, and the STM32F1 software date;
+- RTC Backup Register persistence for sound, motion, brightness, the home-header mode, and the STM32F1 software date;
 - Static task stacks, queues, semaphores, canvases, strings, and game state, with no runtime heap;
 - Strict Debug and Release builds plus a post-link no-heap audit.
 
@@ -49,6 +49,7 @@ General UI controls:
 
 - Home: directional keys change cards; Enter or Jump confirms;
 - Lists: Up/Down selects, Enter or Jump confirms, Back returns;
+- Settings → Home Header: Left/Right, Enter, or Jump cycles Time, Date, Pet, and Title; the choice survives power loss;
 - Hold Func on a non-game page to open Input Lab;
 - Double-click Func on a non-game page to open the clock;
 - Clock: Enter/Jump edits, Left/Right selects a field, Up/Down adjusts, Enter/Jump saves, Back/Func cancels;
@@ -188,7 +189,7 @@ Latest full builds with Arm GNU 15.2.1:
 
 | Configuration | Flash | SRAM | Notes |
 |---|---:|---:|---|
-| Debug (`-Og -g3`) | 60,232 B / 64 KiB (91.91%) | 11,464 B / 20 KiB (55.98%) | Debuggable, no LTO |
-| Release (`-Os -flto`) | 43,596 B / 64 KiB (66.52%) | 11,448 B / 20 KiB (55.90%) | Recommended image |
+| Debug (`-Og -g3`) | 60,988 B / 64 KiB (93.06%) | 11,464 B / 20 KiB (55.98%) | Debuggable, no LTO |
+| Release (`-Os -flto`) | 44,132 B / 64 KiB (67.34%) | 11,448 B / 20 KiB (55.90%) | Recommended image |
 
 The SRAM figure includes the linker's 1 KiB stack reservation. Debug Flash headroom is now tighter, so large glyph or bitmap additions should be checked against Release first while preserving the ability to link a Debug image.
