@@ -106,15 +106,23 @@ ctest --test-dir build/HostTests --output-on-failure
 
 The `.elf`, `.hex`, `.bin`, and `.map` files are written to `build/Debug` and `build/Release`. The verification script also generates `build/HostTests/oled_menu_preview.bmp`.
 
-The ST-LINK Utility CLI has been verified locally using low-speed connect-under-reset:
+### Flashing and debugging with VS Code + STM32Cube
+
+The repository includes the STM32Cube project metadata and shared debug configuration. After installing the recommended `STM32Cube for Visual Studio Code` extension pack, open the repository root, wait for bundle installation and CMake Configure to finish, select `STM32Cube: Build, flash and debug (ST-LINK)` in Run and Debug, and press `F5`. It builds the Debug ELF, downloads and verifies it, then stops at `main`.
+
+The launch uses SWD at 140 kHz and resets the target when starting a debug session, which is more reliable on this board. Some clone probes can misreport target voltage. If the STM32F103 is identified, programming verifies, and GDB halts correctly, judge the session by those concrete results. If connection or verification fails, check 3.3 V, GND, SWDIO, SWCLK, and NRST rather than ignoring the voltage warning.
+
+Keep `.settings/` tracked: it is shared STM32Cube metadata for the device, toolchain, and bundles. Do not ignore all of `.vscode/` either. Shared `settings.json`, `extensions.json`, `launch.json`, and `tasks.json` files belong in Git, while the existing `.gitignore` allowlist continues to exclude local editor state.
+
+`STM32_Programmer_CLI` has been verified locally to download, verify, and reset using low-speed connect-under-reset:
 
 ```powershell
-ST-LINK_CLI.exe -c SWD Freq=100 UR LPM `
-  -P build/Release/stm32103c8t6_game-box.hex `
-  -V after_programming -Rst
+STM32_Programmer_CLI.exe `
+  -c port=SWD freq=100 mode=UR reset=HWrst `
+  -w build/Debug/stm32103c8t6_game-box.elf -v -rst
 ```
 
-Alternatively, flash the Release ELF with OpenOCD:
+When the target-voltage reading is valid, OpenOCD can alternatively flash the Release ELF. Some clone probes are rejected by OpenOCD's low-voltage protection; use the STM32CubeProgrammer/ST-LINK GDB Server path above in that case:
 
 ```powershell
 openocd -f interface/stlink.cfg -f target/stm32f1x.cfg `
@@ -165,7 +173,7 @@ Latest full builds with Arm GNU 15.2.1:
 
 | Configuration | Flash | SRAM | Notes |
 |---|---:|---:|---|
-| Debug (`-Og -g3`) | 58,028 B / 64 KiB (88.54%) | 11,448 B / 20 KiB (55.90%) | Debuggable, no LTO |
-| Release (`-Os -flto`) | 41,148 B / 64 KiB (62.79%) | 11,440 B / 20 KiB (55.86%) | Recommended image |
+| Debug (`-Og -g3`) | 58,772 B / 64 KiB (89.68%) | 11,464 B / 20 KiB (55.98%) | Debuggable, no LTO |
+| Release (`-Os -flto`) | 41,916 B / 64 KiB (63.96%) | 11,448 B / 20 KiB (55.90%) | Recommended image |
 
 The SRAM figure includes the linker's 1 KiB stack reservation. Debug Flash headroom is now tighter, so large glyph or bitmap additions should be checked against Release first while preserving the ability to link a Debug image.

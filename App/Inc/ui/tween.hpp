@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 
 namespace gamebox::ui {
 
@@ -74,6 +75,106 @@ private:
     std::int32_t to_{0};
     std::uint32_t started_ms_{0U};
     std::uint32_t duration_ms_{0U};
+};
+
+enum class SpringSpeed : std::uint8_t {
+    off,
+    slow,
+    fast,
+};
+
+/**
+ * Deterministic one-dimensional damped spring in signed Q24.8 format.
+ *
+ * This is the C++ counterpart of the motion primitive used by the Embassy
+ * firmware. Two fixed steps per 30 FPS UI frame reproduce its nominal 60 Hz
+ * simulation without floating point or frame-time-dependent drift.
+ */
+class Spring final {
+public:
+    constexpr explicit Spring(const std::int16_t value = 0)
+        : position_(static_cast<std::int32_t>(value) * kOne),
+          target_(position_)
+    {
+    }
+
+    void setTarget(const std::int16_t value)
+    {
+        target_ = static_cast<std::int32_t>(value) * kOne;
+    }
+
+    void snapTo(const std::int16_t value)
+    {
+        const std::int32_t fixed = static_cast<std::int32_t>(value) * kOne;
+        position_ = fixed;
+        velocity_ = 0;
+        target_ = fixed;
+    }
+
+    void step(const SpringSpeed speed)
+    {
+        std::int64_t stiffness = 0;
+        std::int64_t damping = 0;
+        switch (speed) {
+        case SpringSpeed::off:
+            position_ = target_;
+            velocity_ = 0;
+            return;
+        case SpringSpeed::slow:
+            stiffness = 34;
+            damping = 206;
+            break;
+        case SpringSpeed::fast:
+            stiffness = 62;
+            damping = 184;
+            break;
+        }
+
+        const std::int64_t displacement =
+            static_cast<std::int64_t>(target_) - static_cast<std::int64_t>(position_);
+        const std::int64_t acceleration = displacement * stiffness / kOne;
+        const std::int64_t velocity =
+            (static_cast<std::int64_t>(velocity_) + acceleration) * damping / kOne;
+        velocity_ = clampToInt32(velocity);
+        position_ = clampToInt32(static_cast<std::int64_t>(position_) + velocity_);
+
+        if (absolute(static_cast<std::int64_t>(target_) - position_) <= 8 &&
+            absolute(velocity_) <= 8) {
+            position_ = target_;
+            velocity_ = 0;
+        }
+    }
+
+    [[nodiscard]] std::int16_t value() const
+    {
+        return static_cast<std::int16_t>((position_ + kOne / 2) / kOne);
+    }
+
+    [[nodiscard]] bool settled() const
+    {
+        return position_ == target_ && velocity_ == 0;
+    }
+
+private:
+    static constexpr std::int32_t kOne = 1 << 8;
+
+    [[nodiscard]] static constexpr std::int32_t clampToInt32(const std::int64_t value)
+    {
+        return value > std::numeric_limits<std::int32_t>::max()
+                   ? std::numeric_limits<std::int32_t>::max()
+               : value < std::numeric_limits<std::int32_t>::min()
+                   ? std::numeric_limits<std::int32_t>::min()
+                   : static_cast<std::int32_t>(value);
+    }
+
+    [[nodiscard]] static constexpr std::int64_t absolute(const std::int64_t value)
+    {
+        return value < 0 ? -value : value;
+    }
+
+    std::int32_t position_{0};
+    std::int32_t velocity_{0};
+    std::int32_t target_{0};
 };
 
 } // namespace gamebox::ui

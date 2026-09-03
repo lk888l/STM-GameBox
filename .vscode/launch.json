@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "STM32Cube: Build, flash and debug (ST-LINK)",
+            "type": "stlinkgdbtarget",
+            "request": "launch",
+            "origin": "snippet",
+            "cwd": "${workspaceFolder}",
+            "preBuild": "${command:st-stm32-ide-debug-launch.build}",
+            "runEntry": "main",
+            "serverInterface": "SWD",
+            "serverInterfaceFrequency": "140",
+            "serverVerify": true,
+            "imagesAndSymbols": [
+                {
+                    "imageFileName": "${command:st-stm32-ide-debug-launch.get-projects-binary-from-context1}",
+                    "symbolFileName": "${command:st-stm32-ide-debug-launch.get-projects-binary-from-context1}"
+                }
+            ]
+        }
+    ]
+}

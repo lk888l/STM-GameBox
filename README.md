@@ -106,15 +106,23 @@ ctest --test-dir build/HostTests --output-on-failure
 
 输出位于 `build/Debug` 和 `build/Release`：`.elf`、`.hex`、`.bin`、`.map`。OLED 桌面预览由验证脚本生成到 `build/HostTests/oled_menu_preview.bmp`。
 
-本机已验证可用的是 ST-LINK Utility CLI 的低速、复位下连接模式：
+### VS Code + STM32Cube 扩展烧录/调试
+
+仓库已提交 STM32Cube 项目元数据和共享调试配置。安装推荐的 `STM32Cube for Visual Studio Code` 扩展包后，直接打开仓库根目录，等待右下角的 bundle 安装和 CMake Configure 完成，然后在“运行和调试”中选择 `STM32Cube: Build, flash and debug (ST-LINK)`，按 `F5` 即会先构建 Debug ELF、写入并校验，再停在 `main`。
+
+配置使用 SWD 140 kHz，并在启动调试时复位目标，更适合本板。若克隆版 ST-LINK 只误报目标电压，但仍能识别 STM32F103、写入校验通过且 GDB 能停住，可按实际连接结果判断；若连接或校验失败，则必须先检查 3.3 V、GND、SWDIO、SWCLK 和 NRST，不能直接忽略电压提示。
+
+`.settings/` 是 STM32Cube 扩展识别器件、工具链和 bundle 的共享项目元数据，不应整体忽略。`.vscode/` 也不应整体忽略：`settings.json`、`extensions.json`、`launch.json`、`tasks.json` 等可复现配置应提交，用户本地状态继续由当前 `.gitignore` 的白名单规则排除。
+
+本机已验证 `STM32_Programmer_CLI` 的低速、复位下连接模式可完成下载、校验和复位：
 
 ```powershell
-ST-LINK_CLI.exe -c SWD Freq=100 UR LPM `
-  -P build/Release/stm32103c8t6_game-box.hex `
-  -V after_programming -Rst
+STM32_Programmer_CLI.exe `
+  -c port=SWD freq=100 mode=UR reset=HWrst `
+  -w build/Debug/stm32103c8t6_game-box.elf -v -rst
 ```
 
-也可以使用 OpenOCD 烧录 Release ELF：
+目标电压读数正常时，也可以使用 OpenOCD 烧录 Release ELF；部分克隆探针会被 OpenOCD 的低电压保护直接拒绝，此时应使用上面的 STM32CubeProgrammer/ST-LINK GDB Server 链路：
 
 ```powershell
 openocd -f interface/stlink.cfg -f target/stm32f1x.cfg `
@@ -165,7 +173,7 @@ Arm GNU 15.2.1 的最近一次完整构建结果：
 
 | 配置 | Flash | SRAM | 说明 |
 |---|---:|---:|---|
-| Debug (`-Og -g3`) | 58,028 B / 64 KiB（88.54%） | 11,448 B / 20 KiB（55.90%） | 可调试、无 LTO |
-| Release (`-Os -flto`) | 41,148 B / 64 KiB（62.79%） | 11,440 B / 20 KiB（55.86%） | 推荐烧录 |
+| Debug (`-Og -g3`) | 58,772 B / 64 KiB（89.68%） | 11,464 B / 20 KiB（55.98%） | 可调试、无 LTO |
+| Release (`-Os -flto`) | 41,916 B / 64 KiB（63.96%） | 11,448 B / 20 KiB（55.90%） | 推荐烧录 |
 
 RAM 数字已包含链接器保留的 1 KiB 栈。Debug 的 Flash 余量较小，后续新增大字库或图片资源前应优先检查 Release 预算，并持续保留 Debug 可链接能力。

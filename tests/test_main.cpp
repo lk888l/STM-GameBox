@@ -150,6 +150,25 @@ void testTween()
     tween.start(0, 100, 0U, gamebox::ui::Tween::kMaximumDurationMs + 1U);
     check(!tween.active(gamebox::ui::Tween::kMaximumDurationMs),
           "tween duration must be bounded to protect fixed-point arithmetic");
+
+    gamebox::ui::Spring spring(0);
+    spring.setTarget(100);
+    bool overshot = false;
+    for (std::uint16_t step = 0U; step < 180U; ++step) {
+        spring.step(gamebox::ui::SpringSpeed::fast);
+        if (spring.value() > 100) {
+            overshot = true;
+        }
+    }
+    check(overshot, "fast spring must retain the Embassy motion overshoot");
+    check(spring.value() == 100 && spring.settled(),
+          "spring must converge exactly without floating point");
+
+    spring.snapTo(-12);
+    spring.setTarget(87);
+    spring.step(gamebox::ui::SpringSpeed::off);
+    check(spring.value() == 87 && spring.settled(),
+          "disabled motion must snap the spring to its target");
 }
 
 void testSnakeModel()

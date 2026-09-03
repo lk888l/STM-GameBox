@@ -71,11 +71,12 @@ private:
                     std::int16_t x_offset,
                     std::uint32_t now_ms,
                     bool interactive);
-    void renderHome(std::int16_t x_offset, std::uint32_t now_ms, bool interactive);
-    void renderHomeCard(const MenuEntry& entry, std::int16_t x_offset);
+    void renderHome(std::int16_t x_offset, bool interactive);
+    void renderHomeCard(const MenuEntry& entry,
+                        std::uint8_t index,
+                        std::int16_t x_offset);
     void renderList(View view,
                     std::int16_t x_offset,
-                    std::uint32_t now_ms,
                     bool interactive);
     void renderClock(std::int16_t x_offset, std::uint32_t now_ms);
     void renderStopwatch(std::int16_t x_offset, std::uint32_t now_ms);
@@ -102,9 +103,12 @@ private:
     void setSetting(Action action, std::uint32_t now_ms);
     void persistSettings();
     [[nodiscard]] const char* settingValue(Action action) const;
-    [[nodiscard]] std::uint32_t motionDuration(std::uint32_t full_ms,
-                                               std::uint32_t reduced_ms) const;
+    void stepMotion();
+    void syncListMotion(View view);
+    [[nodiscard]] SpringSpeed springSpeed() const;
     [[nodiscard]] std::int16_t selectionTargetY(View view) const;
+    [[nodiscard]] std::int16_t selectionTargetWidth(View view) const;
+    [[nodiscard]] std::int16_t scrollTargetY(View view) const;
     [[nodiscard]] static std::size_t viewIndex(View view);
     [[nodiscard]] static std::uint32_t toMilliseconds(TickType_t ticks);
 
@@ -130,9 +134,11 @@ private:
     std::uint8_t scroll_top_[kViewCount]{};
     std::uint8_t carousel_previous_{0U};
     std::int8_t carousel_direction_{1};
-    Tween page_tween_{};
-    Tween selection_tween_{};
-    Tween carousel_tween_{};
+    Spring page_spring_{0};
+    Spring selection_spring_{14};
+    Spring selection_width_spring_{52};
+    Spring scroll_spring_{0};
+    Spring carousel_spring_{0};
     bool page_forward_{true};
 
     MotionLevel motion_{MotionLevel::full};

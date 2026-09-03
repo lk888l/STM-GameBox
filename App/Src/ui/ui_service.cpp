@@ -6,9 +6,10 @@ namespace {
 
 constexpr TickType_t kFramePeriod = pdMS_TO_TICKS(33U);
 constexpr std::uint32_t kUiStackDepth = 384U;
-constexpr std::uint8_t kVisibleRows = 4U;
-constexpr std::int16_t kFirstRowY = 13;
-constexpr std::int16_t kRowHeight = 10;
+constexpr std::uint8_t kVisibleRows = 3U;
+constexpr std::int16_t kFirstRowY = 14;
+constexpr std::int16_t kRowHeight = 16;
+constexpr std::int16_t kSelectionHeight = 15;
 static_assert(configTICK_RATE_HZ == 1000U,
               "GameBox timing assumes one FreeRTOS tick equals one millisecond");
 
@@ -44,6 +45,27 @@ etl::string_view unsignedText(std::uint32_t value, char (&buffer)[11])
         value /= 10U;
     } while (value != 0U);
     return {cursor, static_cast<std::size_t>(&buffer[10] - cursor)};
+}
+
+std::int16_t textWidth(const etl::string_view text)
+{
+    constexpr std::size_t maximum_characters = 20U;
+    const std::size_t characters =
+        text.size() < maximum_characters ? text.size() : maximum_characters;
+    return static_cast<std::int16_t>(characters * 6U);
+}
+
+void formatPosition(const std::uint8_t index,
+                    const std::uint8_t count,
+                    char (&output)[6])
+{
+    const std::uint8_t position = static_cast<std::uint8_t>(index + 1U);
+    output[0] = static_cast<char>('0' + position / 10U);
+    output[1] = static_cast<char>('0' + position % 10U);
+    output[2] = '/';
+    output[3] = static_cast<char>('0' + count / 10U);
+    output[4] = static_cast<char>('0' + count % 10U);
+    output[5] = '\0';
 }
 
 const char* buttonName(const input::Button button)
@@ -116,9 +138,11 @@ bool UiService::prepare(const std::uint32_t boot_seed)
     current_view_ = View::home;
     previous_view_ = current_view_;
     history_size_ = 0U;
-    page_tween_.jumpTo(display::Canvas::kWidth);
-    selection_tween_.jumpTo(selectionTargetY(current_view_));
-    carousel_tween_.jumpTo(display::Canvas::kWidth);
+    page_spring_.snapTo(0);
+    selection_spring_.snapTo(kFirstRowY);
+    selection_width_spring_.snapTo(52);
+    scroll_spring_.snapTo(0);
+    carousel_spring_.snapTo(0);
     boot_seed_ = boot_seed;
     snake_.reset(boot_seed_);
     canvas_.clear();
@@ -155,15 +179,28 @@ std::uint32_t UiService::toMilliseconds(const TickType_t ticks)
     return static_cast<std::uint32_t>(ticks);
 }
 
-std::uint32_t UiService::motionDuration(const std::uint32_t full_ms,
-                                        const std::uint32_t reduced_ms) const
+SpringSpeed UiService::springSpeed() const
 {
     switch (motion_) {
-    case MotionLevel::full: return full_ms;
-    case MotionLevel::reduced: return reduced_ms;
-    case MotionLevel::off: return 0U;
+    case MotionLevel::full: return SpringSpeed::fast;
+    case MotionLevel::reduced: return SpringSpeed::slow;
+    case MotionLevel::off: return SpringSpeed::off;
     }
-    return 0U;
+    return SpringSpeed::off;
+}
+
+void UiService::stepMotion()
+{
+    const SpringSpeed speed = springSpeed();
+    // The Rust/Embassy UI advances its 60 Hz fixed-point simulation twice per
+    // 30 FPS OLED frame. Keep that cadence so both firmwares feel identical.
+    for (std::uint8_t step = 0U; step < 2U; ++step) {
+        page_spring_.step(speed);
+        selection_spring_.step(speed);
+        selection_width_spring_.step(speed);
+        scroll_spring_.step(speed);
+        carousel_spring_.step(speed);
+    }
 }
 
 void UiService::run()
@@ -193,6 +230,8 @@ void UiService::feedbackPulse(const std::uint32_t now_ms)
 
 void UiService::update(const std::uint32_t now_ms)
 {
+    stepMotion();
+
     if (current_view_ == View::snake) {
         snake_.update(now_ms);
     } else if (current_view_ == View::dino) {
@@ -232,7 +271,7 @@ void UiService::handleEvent(const input::ButtonEvent& event, const std::uint32_t
     last_event_ = event;
     ++event_count_;
 
-    if (page_tween_.active(now_ms)) {
+    if (!page_spring_.settled()) {
         return;
     }
 
@@ -313,7 +352,7 @@ void UiService::handleMenuEvent(const input::ButtonEvent& event,
                                   event.type == input::ButtonEventType::repeat;
     if (navigation_event) {
         if (current_view_ == View::home) {
-            if (carousel_tween_.active(now_ms)) {
+            if (!carousel_spring_.settled()) {
                 return;
             }
             if (event.button == input::Button::left || event.button == input::Button::up) {
@@ -368,21 +407,11 @@ void UiService::moveSelection(const std::int8_t delta, const std::uint32_t now_m
     if (current_view_ == View::home) {
         carousel_previous_ = old_selection;
         carousel_direction_ = delta >= 0 ? 1 : -1;
-        carousel_tween_.start(0,
-                              display::Canvas::kWidth,
-                              now_ms,
-                              motionDuration(190U, 100U));
+        carousel_spring_.snapTo(static_cast<std::int16_t>(
+            carousel_direction_ * display::Canvas::kWidth));
+        carousel_spring_.setTarget(0);
     } else {
-        std::uint8_t& top = scroll_top_[index];
-        const std::uint8_t selected = selections_[index];
-        if (selected < top) {
-            top = selected;
-        } else if (selected >= static_cast<std::uint8_t>(top + kVisibleRows)) {
-            top = static_cast<std::uint8_t>(selected - kVisibleRows + 1U);
-        }
-        selection_tween_.retarget(selectionTargetY(current_view_),
-                                  now_ms,
-                                  motionDuration(135U, 75U));
+        syncListMotion(current_view_);
     }
     feedbackPulse(now_ms);
 }
@@ -486,11 +515,9 @@ void UiService::openView(const View target,
     previous_view_ = current_view_;
     current_view_ = target;
     page_forward_ = true;
-    page_tween_.start(0,
-                      display::Canvas::kWidth,
-                      now_ms,
-                      motionDuration(220U, 120U));
-    selection_tween_.jumpTo(selectionTargetY(current_view_));
+    page_spring_.snapTo(display::Canvas::kWidth);
+    page_spring_.setTarget(0);
+    syncListMotion(current_view_);
     const std::uint32_t seed = boot_seed_ ^ now_ms ^ (event_count_ << 9U) ^ 0x9E3779B9U;
     switch (target) {
     case View::snake: snake_.reset(seed ^ 0x51A2E11FU); break;
@@ -512,11 +539,9 @@ void UiService::navigateBack(const std::uint32_t now_ms)
     previous_view_ = current_view_;
     current_view_ = target;
     page_forward_ = false;
-    page_tween_.start(0,
-                      display::Canvas::kWidth,
-                      now_ms,
-                      motionDuration(200U, 110U));
-    selection_tween_.jumpTo(selectionTargetY(current_view_));
+    page_spring_.snapTo(static_cast<std::int16_t>(-display::Canvas::kWidth));
+    page_spring_.setTarget(0);
+    syncListMotion(current_view_);
     feedbackPulse(now_ms);
 }
 
@@ -842,6 +867,43 @@ std::int16_t UiService::selectionTargetY(const View view) const
                             kRowHeight);
 }
 
+std::int16_t UiService::selectionTargetWidth(const View view) const
+{
+    if (!isMenu(view) || view == View::home) {
+        return 52;
+    }
+    const MenuEntry& entry = entryAt(view, selections_[viewIndex(view)]);
+    const std::int16_t width = static_cast<std::int16_t>(textWidth(entry.label) + 20);
+    return width < 12 ? 12 : (width > 121 ? 121 : width);
+}
+
+std::int16_t UiService::scrollTargetY(const View view) const
+{
+    if (!isMenu(view) || view == View::home) {
+        return 0;
+    }
+    return static_cast<std::int16_t>(
+        -static_cast<std::int16_t>(scroll_top_[viewIndex(view)]) * kRowHeight);
+}
+
+void UiService::syncListMotion(const View view)
+{
+    const MenuDefinition* const menu = menuFor(view);
+    if (menu == nullptr || view == View::home || menu->count == 0U) {
+        return;
+    }
+
+    const std::size_t state_index = viewIndex(view);
+    const std::uint8_t selected = selections_[state_index];
+    const std::uint8_t maximum_top =
+        menu->count > kVisibleRows ? static_cast<std::uint8_t>(menu->count - kVisibleRows) : 0U;
+    const std::uint8_t centered_top = selected > 0U ? static_cast<std::uint8_t>(selected - 1U) : 0U;
+    scroll_top_[state_index] = centered_top < maximum_top ? centered_top : maximum_top;
+    selection_spring_.setTarget(selectionTargetY(view));
+    selection_width_spring_.setTarget(selectionTargetWidth(view));
+    scroll_spring_.setTarget(scrollTargetY(view));
+}
+
 void UiService::showToast(const etl::string_view message,
                           const std::uint32_t now_ms,
                           const std::uint32_t duration_ms)
@@ -859,21 +921,12 @@ void UiService::showToast(const etl::string_view message,
 void UiService::render(const std::uint32_t now_ms)
 {
     canvas_.clear();
-    if (page_tween_.active(now_ms)) {
-        const std::int16_t progress = static_cast<std::int16_t>(page_tween_.value(now_ms));
-        if (page_forward_) {
-            renderView(previous_view_, static_cast<std::int16_t>(-progress), now_ms, false);
-            renderView(current_view_,
-                       static_cast<std::int16_t>(display::Canvas::kWidth - progress),
-                       now_ms,
-                       false);
-        } else {
-            renderView(previous_view_, progress, now_ms, false);
-            renderView(current_view_,
-                       static_cast<std::int16_t>(progress - display::Canvas::kWidth),
-                       now_ms,
-                       false);
-        }
+    if (!page_spring_.settled()) {
+        const std::int16_t current_x = page_spring_.value();
+        const std::int16_t previous_x = static_cast<std::int16_t>(
+            current_x + (page_forward_ ? -display::Canvas::kWidth : display::Canvas::kWidth));
+        renderView(previous_view_, previous_x, now_ms, false);
+        renderView(current_view_, current_x, now_ms, true);
     } else {
         renderView(current_view_, 0, now_ms, true);
     }
@@ -886,10 +939,10 @@ void UiService::renderView(const View view,
                            const bool interactive)
 {
     switch (view) {
-    case View::home: renderHome(x_offset, now_ms, interactive); break;
+    case View::home: renderHome(x_offset, interactive); break;
     case View::games:
     case View::tools:
-    case View::settings: renderList(view, x_offset, now_ms, interactive); break;
+    case View::settings: renderList(view, x_offset, interactive); break;
     case View::clock: renderClock(x_offset, now_ms); break;
     case View::stopwatch: renderStopwatch(x_offset, now_ms); break;
     case View::timer: renderTimer(x_offset, now_ms); break;
@@ -921,90 +974,129 @@ void UiService::renderFooter(const std::int16_t x_offset, const etl::string_view
     canvas_.drawText(static_cast<std::int16_t>(x_offset + 4), 56, hint);
 }
 
-void UiService::renderHome(const std::int16_t x_offset,
-                           const std::uint32_t now_ms,
-                           const bool interactive)
+void UiService::renderHome(const std::int16_t x_offset, const bool interactive)
 {
-    renderHeader(x_offset, "GAMEBOX");
     const std::uint8_t selected = selections_[viewIndex(View::home)];
-    if (interactive && carousel_tween_.active(now_ms)) {
-        const std::int16_t progress = static_cast<std::int16_t>(carousel_tween_.value(now_ms));
-        if (carousel_direction_ > 0) {
-            renderHomeCard(entryAt(View::home, carousel_previous_),
-                           static_cast<std::int16_t>(x_offset - progress));
-            renderHomeCard(entryAt(View::home, selected),
-                           static_cast<std::int16_t>(x_offset + display::Canvas::kWidth - progress));
-        } else {
-            renderHomeCard(entryAt(View::home, carousel_previous_),
-                           static_cast<std::int16_t>(x_offset + progress));
-            renderHomeCard(entryAt(View::home, selected),
-                           static_cast<std::int16_t>(x_offset - display::Canvas::kWidth + progress));
-        }
+    if (interactive && !carousel_spring_.settled()) {
+        const std::int16_t current_x = carousel_spring_.value();
+        const std::int16_t previous_x = static_cast<std::int16_t>(
+            current_x - carousel_direction_ * display::Canvas::kWidth);
+        renderHomeCard(entryAt(View::home, carousel_previous_),
+                       carousel_previous_,
+                       static_cast<std::int16_t>(x_offset + previous_x));
+        renderHomeCard(entryAt(View::home, selected),
+                       selected,
+                       static_cast<std::int16_t>(x_offset + current_x));
     } else {
-        renderHomeCard(entryAt(View::home, selected), x_offset);
+        renderHomeCard(entryAt(View::home, selected), selected, x_offset);
     }
-
-    const MenuDefinition* const home = menuFor(View::home);
-    const std::int16_t dots_width = static_cast<std::int16_t>(home->count * 8U);
-    const std::int16_t dots_x = static_cast<std::int16_t>(x_offset + (128 - dots_width) / 2);
-    for (std::uint8_t index = 0U; index < home->count; ++index) {
-        const std::int16_t dot_x = static_cast<std::int16_t>(dots_x + index * 8 + 2);
-        if (index == selected) {
-            canvas_.fillRoundedRectangle(dot_x, 50, 5, 3, 1);
-        } else {
-            canvas_.pixel(static_cast<std::int16_t>(dot_x + 2), 51);
-        }
-    }
-    renderFooter(x_offset, "<> SELECT  ENTER");
 }
 
-void UiService::renderHomeCard(const MenuEntry& entry, const std::int16_t x_offset)
+void UiService::renderHomeCard(const MenuEntry& entry,
+                               const std::uint8_t index,
+                               const std::int16_t x_offset)
 {
-    canvas_.roundedRectangle(static_cast<std::int16_t>(x_offset + 10), 14, 108, 34, 3);
-    renderIcon(entry.icon, static_cast<std::int16_t>(x_offset + 18), 22);
-    canvas_.drawText(static_cast<std::int16_t>(x_offset + 49), 20, entry.label);
-    canvas_.horizontalLine(static_cast<std::int16_t>(x_offset + 49), 30, 59);
-    canvas_.drawText(static_cast<std::int16_t>(x_offset + 49), 35, entry.subtitle);
+    const MenuDefinition* const home = menuFor(View::home);
+    char position[6]{};
+    formatPosition(index, home->count, position);
+
+    // One almost-full-screen surface replaces the old header/card/footer
+    // sandwich. Every vertical band now carries useful category information.
+    canvas_.roundedRectangle(static_cast<std::int16_t>(x_offset + 2), 1, 124, 62, 3);
+    canvas_.drawText(static_cast<std::int16_t>(x_offset + 7), 3, "GAMEBOX");
+    canvas_.fillRoundedRectangle(static_cast<std::int16_t>(x_offset + 92), 2, 32, 9, 2);
+    canvas_.drawText(static_cast<std::int16_t>(x_offset + 93), 3, position, true);
+    canvas_.horizontalLine(static_cast<std::int16_t>(x_offset + 4), 12, 120);
+
+    canvas_.roundedRectangle(static_cast<std::int16_t>(x_offset + 7), 16, 34, 27, 3);
+    renderIcon(entry.icon, static_cast<std::int16_t>(x_offset + 12), 21);
+
+    const std::int16_t title_width = static_cast<std::int16_t>(textWidth(entry.label) + 8);
+    canvas_.fillRoundedRectangle(static_cast<std::int16_t>(x_offset + 45),
+                                 17,
+                                 title_width,
+                                 11,
+                                 2);
+    canvas_.drawText(static_cast<std::int16_t>(x_offset + 49), 19, entry.label, true);
+    canvas_.horizontalLine(static_cast<std::int16_t>(x_offset + 46), 30, 77);
+    canvas_.drawText(static_cast<std::int16_t>(x_offset + 46), 33, entry.subtitle);
+
+    canvas_.horizontalLine(static_cast<std::int16_t>(x_offset + 4), 47, 120);
+    for (std::uint8_t dot = 0U; dot < home->count; ++dot) {
+        const std::int16_t dot_x = static_cast<std::int16_t>(
+            x_offset + 8 + static_cast<std::int16_t>(dot) * 7);
+        if (dot == index) {
+            canvas_.fillRoundedRectangle(dot_x, 54, 5, 3, 1);
+        } else {
+            canvas_.pixel(static_cast<std::int16_t>(dot_x + 2), 55);
+        }
+    }
+    canvas_.drawText(static_cast<std::int16_t>(x_offset + 42), 52, "<> MOVE");
+    canvas_.drawText(static_cast<std::int16_t>(x_offset + 92), 52, "ENTER");
 }
 
 void UiService::renderList(const View view,
                            const std::int16_t x_offset,
-                           const std::uint32_t now_ms,
                            const bool interactive)
 {
     const MenuDefinition* const menu = menuFor(view);
-    renderHeader(x_offset, menu->title);
     const std::size_t state_index = viewIndex(view);
     const std::uint8_t selected = selections_[state_index];
-    const std::uint8_t top = scroll_top_[state_index];
-    const std::int16_t highlight_y = interactive
-                                         ? static_cast<std::int16_t>(selection_tween_.value(now_ms))
-                                         : selectionTargetY(view);
-    canvas_.fillRoundedRectangle(static_cast<std::int16_t>(x_offset + 2),
-                                 highlight_y,
-                                 124,
-                                 9,
-                                 2);
+    char position[6]{};
+    formatPosition(selected, menu->count, position);
 
-    for (std::uint8_t row = 0U; row < kVisibleRows; ++row) {
-        const std::uint8_t item_index = static_cast<std::uint8_t>(top + row);
-        if (item_index >= menu->count) {
-            break;
+    const std::int16_t scroll_y = interactive ? scroll_spring_.value() : scrollTargetY(view);
+    for (std::uint8_t item_index = 0U; item_index < menu->count; ++item_index) {
+        const std::int16_t y = static_cast<std::int16_t>(
+            kFirstRowY + static_cast<std::int16_t>(item_index) * kRowHeight + scroll_y);
+        if (y <= -8 || y >= display::Canvas::kHeight) {
+            continue;
         }
         const MenuEntry& entry = menu->entries[item_index];
-        const std::int16_t y = static_cast<std::int16_t>(kFirstRowY + row * kRowHeight);
-        const bool inverted = item_index == selected;
-        canvas_.drawText(static_cast<std::int16_t>(x_offset + 7), y, entry.label, inverted);
+        canvas_.drawText(static_cast<std::int16_t>(x_offset + 8), y, entry.label);
         if (view == View::settings) {
             const char* const value = settingValue(entry.action);
             std::size_t length = 0U;
             while (value[length] != '\0') { ++length; }
             const std::int16_t value_x = static_cast<std::int16_t>(
-                x_offset + 122 - static_cast<std::int16_t>(length * 6U));
-            canvas_.drawText(value_x, y, value, inverted);
+                x_offset + 120 - static_cast<std::int16_t>(length * 6U));
+            canvas_.drawText(value_x, y, value);
         }
     }
-    renderFooter(x_offset, "UP/DN  ENTER  BACK");
+
+    const std::int16_t highlight_y =
+        interactive ? selection_spring_.value() : selectionTargetY(view);
+    const std::int16_t highlight_width =
+        interactive ? selection_width_spring_.value() : selectionTargetWidth(view);
+    canvas_.fillRoundedRectangle(static_cast<std::int16_t>(x_offset + 3),
+                                 highlight_y,
+                                 highlight_width,
+                                 kSelectionHeight,
+                                 2,
+                                 display::PixelOperation::invert);
+
+    if (menu->count > 1U) {
+        canvas_.verticalLine(static_cast<std::int16_t>(x_offset + 125), 15, 46);
+        const std::uint16_t position_y = static_cast<std::uint16_t>(
+            static_cast<std::uint16_t>(selected) * 42U /
+            static_cast<std::uint16_t>(menu->count - 1U));
+        canvas_.fillRoundedRectangle(static_cast<std::int16_t>(x_offset + 123),
+                                     static_cast<std::int16_t>(15 + position_y),
+                                     5,
+                                     4,
+                                     1);
+    }
+
+    // Redraw an opaque title rail last so rows moving on the spring are
+    // cleanly clipped at its lower edge.
+    canvas_.fillRectangle(x_offset,
+                          0,
+                          display::Canvas::kWidth,
+                          12,
+                          display::PixelOperation::clear);
+    canvas_.drawText(static_cast<std::int16_t>(x_offset + 4), 2, menu->title);
+    canvas_.drawText(static_cast<std::int16_t>(x_offset + 96), 2, position);
+    canvas_.horizontalLine(x_offset, 11, display::Canvas::kWidth);
 }
 
 void UiService::renderClock(const std::int16_t x_offset, const std::uint32_t now_ms)
