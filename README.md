@@ -102,9 +102,12 @@ cmake --build --preset Release
 cmake -S tests -B build/HostTests -G Ninja
 cmake --build build/HostTests
 ctest --test-dir build/HostTests --output-on-failure
+
+cmake --preset Analyze
+cmake --build --preset Analyze
 ```
 
-输出位于 `build/Debug` 和 `build/Release`：`.elf`、`.hex`、`.bin`、`.map`。OLED 桌面预览由验证脚本生成到 `build/HostTests/oled_menu_preview.bmp`。
+输出位于 `build/Debug` 和 `build/Release`：`.elf`、`.hex`、`.bin`、`.map`。OLED 桌面预览由验证脚本生成到 `build/HostTests/oled_menu_preview.bmp`。`Analyze` preset 启用 GCC `-fanalyzer`；针对 ETL `string_view` 建模误报和固件故障停机死循环关闭了两个已知噪声类别，其余分析诊断继续受 `-Werror` 约束。GitHub Actions 会在 push 和 pull request 上重复执行完整验证与静态分析。
 
 ### VS Code + STM32Cube 扩展烧录/调试
 
@@ -134,10 +137,22 @@ openocd -f interface/stlink.cfg -f target/stm32f1x.cfg `
 
 ```powershell
 openocd -f interface/stlink.cfg `
+  -f target/stm32f1x.cfg `
   -c "transport select swd" `
   -c "adapter speed 100" `
   -c "reset_config srst_only srst_nogate connect_assert_srst" `
+  -c "program build/Release/stm32103c8t6_game-box.elf verify reset exit"
+```
+
+`target/stm32f1x.cfg` 必须先于 `adapter speed 100` 加载，否则目标脚本会把低速值覆盖回默认值。若探针没有连接 NRST，物理 reset 可能让 CPU 留在 RAM 烧录算法中；此时改用 Cortex-M 软件复位：
+
+```powershell
+openocd -f interface/stlink.cfg `
   -f target/stm32f1x.cfg `
+  -c "transport select swd" `
+  -c "adapter speed 100" `
+  -c "reset_config none" `
+  -c "cortex_m reset_config sysresetreq" `
   -c "program build/Release/stm32103c8t6_game-box.elf verify reset exit"
 ```
 
@@ -173,7 +188,7 @@ Arm GNU 15.2.1 的最近一次完整构建结果：
 
 | 配置 | Flash | SRAM | 说明 |
 |---|---:|---:|---|
-| Debug (`-Og -g3`) | 58,772 B / 64 KiB（89.68%） | 11,464 B / 20 KiB（55.98%） | 可调试、无 LTO |
-| Release (`-Os -flto`) | 41,916 B / 64 KiB（63.96%） | 11,448 B / 20 KiB（55.90%） | 推荐烧录 |
+| Debug (`-Og -g3`) | 60,232 B / 64 KiB（91.91%） | 11,464 B / 20 KiB（55.98%） | 可调试、无 LTO |
+| Release (`-Os -flto`) | 43,596 B / 64 KiB（66.52%） | 11,448 B / 20 KiB（55.90%） | 推荐烧录 |
 
 RAM 数字已包含链接器保留的 1 KiB 栈。Debug 的 Flash 余量较小，后续新增大字库或图片资源前应优先检查 Release 预算，并持续保留 Debug 可链接能力。

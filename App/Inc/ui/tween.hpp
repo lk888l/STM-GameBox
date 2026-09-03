@@ -87,8 +87,8 @@ enum class SpringSpeed : std::uint8_t {
  * Deterministic one-dimensional damped spring in signed Q24.8 format.
  *
  * This is the C++ counterpart of the motion primitive used by the Embassy
- * firmware. Two fixed steps per 30 FPS UI frame reproduce its nominal 60 Hz
- * simulation without floating point or frame-time-dependent drift.
+ * firmware. The UI advances four fixed steps per 33 ms OLED frame to match the
+ * Embassy cadence of two steps per 16 ms without using floating point.
  */
 class Spring final {
 public:

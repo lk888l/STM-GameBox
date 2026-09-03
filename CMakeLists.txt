@@ -32,6 +32,11 @@ project(${CMAKE_PROJECT_NAME} LANGUAGES C CXX ASM)
 message("Build type: " ${CMAKE_BUILD_TYPE})
 
 option(GAMEBOX_WARNINGS_AS_ERRORS "Treat handwritten C++ warnings as errors" ON)
+option(GAMEBOX_ENABLE_ANALYZER "Run GCC's path-sensitive static analyzer" OFF)
+
+if(GAMEBOX_ENABLE_ANALYZER AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    message(FATAL_ERROR "GAMEBOX_ENABLE_ANALYZER requires a GNU C++ compiler")
+endif()
 
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME})
@@ -88,6 +93,10 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic;-Wconversion;-Wsign-conversion;-Wshadow;-Wundef>
     $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<BOOL:${GAMEBOX_WARNINGS_AS_ERRORS}>>:-Werror>
+    # GCC currently mis-models ETL's pointer-pair string_view and intentionally
+    # non-returning firmware halt loops. Keep the remaining analyzer families
+    # as errors while the ordinary compiler still checks uninitialized values.
+    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<BOOL:${GAMEBOX_ENABLE_ANALYZER}>>:-fanalyzer;-Wno-analyzer-use-of-uninitialized-value;-Wno-analyzer-infinite-loop>
 )
 
 # Remove wrong libob.a library dependency when using cpp files

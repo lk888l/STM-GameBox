@@ -102,9 +102,12 @@ cmake --build --preset Release
 cmake -S tests -B build/HostTests -G Ninja
 cmake --build build/HostTests
 ctest --test-dir build/HostTests --output-on-failure
+
+cmake --preset Analyze
+cmake --build --preset Analyze
 ```
 
-The `.elf`, `.hex`, `.bin`, and `.map` files are written to `build/Debug` and `build/Release`. The verification script also generates `build/HostTests/oled_menu_preview.bmp`.
+The `.elf`, `.hex`, `.bin`, and `.map` files are written to `build/Debug` and `build/Release`. The verification script also generates `build/HostTests/oled_menu_preview.bmp`. The `Analyze` preset enables GCC `-fanalyzer`. Two known-noise categories are disabled for ETL `string_view` modelling and deliberate firmware halt loops; all other analyzer diagnostics remain subject to `-Werror`. GitHub Actions repeats the full verification and static-analysis builds on pushes and pull requests.
 
 ### Flashing and debugging with VS Code + STM32Cube
 
@@ -134,10 +137,22 @@ If target firmware interferes with debug entry, use OpenOCD connect-under-reset:
 
 ```powershell
 openocd -f interface/stlink.cfg `
+  -f target/stm32f1x.cfg `
   -c "transport select swd" `
   -c "adapter speed 100" `
   -c "reset_config srst_only srst_nogate connect_assert_srst" `
+  -c "program build/Release/stm32103c8t6_game-box.elf verify reset exit"
+```
+
+Load `target/stm32f1x.cfg` before setting `adapter speed 100`; otherwise the target script overwrites the low-speed setting with its default. If the probe does not carry NRST, a physical reset can leave the CPU in the RAM flash algorithm. Use a Cortex-M software reset instead:
+
+```powershell
+openocd -f interface/stlink.cfg `
   -f target/stm32f1x.cfg `
+  -c "transport select swd" `
+  -c "adapter speed 100" `
+  -c "reset_config none" `
+  -c "cortex_m reset_config sysresetreq" `
   -c "program build/Release/stm32103c8t6_game-box.elf verify reset exit"
 ```
 
@@ -173,7 +188,7 @@ Latest full builds with Arm GNU 15.2.1:
 
 | Configuration | Flash | SRAM | Notes |
 |---|---:|---:|---|
-| Debug (`-Og -g3`) | 58,772 B / 64 KiB (89.68%) | 11,464 B / 20 KiB (55.98%) | Debuggable, no LTO |
-| Release (`-Os -flto`) | 41,916 B / 64 KiB (63.96%) | 11,448 B / 20 KiB (55.90%) | Recommended image |
+| Debug (`-Og -g3`) | 60,232 B / 64 KiB (91.91%) | 11,464 B / 20 KiB (55.98%) | Debuggable, no LTO |
+| Release (`-Os -flto`) | 43,596 B / 64 KiB (66.52%) | 11,448 B / 20 KiB (55.90%) | Recommended image |
 
 The SRAM figure includes the linker's 1 KiB stack reservation. Debug Flash headroom is now tighter, so large glyph or bitmap additions should be checked against Release first while preserving the ability to link a Debug image.

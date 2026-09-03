@@ -33,7 +33,11 @@ try {
     Assert-NativeSuccess 'Host build'
     ctest --test-dir build/HostTests --output-on-failure
     Assert-NativeSuccess 'Host tests'
-    & build/HostTests/oled_preview.exe build/HostTests/oled_menu_preview.bmp
+    $isWindowsHost = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+        [System.Runtime.InteropServices.OSPlatform]::Windows)
+    $previewName = if ($isWindowsHost) { 'oled_preview.exe' } else { 'oled_preview' }
+    $previewExecutable = Join-Path 'build/HostTests' $previewName
+    & $previewExecutable build/HostTests/oled_menu_preview.bmp
     Assert-NativeSuccess 'OLED preview'
 }
 finally {

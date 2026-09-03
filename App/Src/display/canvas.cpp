@@ -6,9 +6,109 @@ namespace gamebox::display {
 
 namespace {
 
-constexpr std::int16_t absolute(const std::int16_t value)
+struct Fraction {
+    std::int32_t numerator;
+    std::int32_t denominator;
+};
+
+constexpr int compare(const Fraction left, const Fraction right)
 {
-    return value < 0 ? static_cast<std::int16_t>(-value) : value;
+    const std::int64_t left_scaled =
+        static_cast<std::int64_t>(left.numerator) * right.denominator;
+    const std::int64_t right_scaled =
+        static_cast<std::int64_t>(right.numerator) * left.denominator;
+    if (left_scaled < right_scaled) {
+        return -1;
+    }
+    if (left_scaled > right_scaled) {
+        return 1;
+    }
+    return 0;
+}
+
+bool narrowInterval(const std::int32_t direction,
+                    const std::int32_t distance,
+                    Fraction& entering,
+                    Fraction& leaving)
+{
+    if (direction == 0) {
+        return distance >= 0;
+    }
+
+    const bool entering_boundary = direction < 0;
+    Fraction candidate{distance, direction};
+    if (candidate.denominator < 0) {
+        candidate.numerator = -candidate.numerator;
+        candidate.denominator = -candidate.denominator;
+    }
+
+    if (entering_boundary) {
+        if (compare(candidate, leaving) > 0) {
+            return false;
+        }
+        if (compare(candidate, entering) > 0) {
+            entering = candidate;
+        }
+    } else {
+        if (compare(candidate, entering) < 0) {
+            return false;
+        }
+        if (compare(candidate, leaving) < 0) {
+            leaving = candidate;
+        }
+    }
+    return true;
+}
+
+std::int32_t interpolate(const std::int32_t start,
+                         const std::int32_t delta,
+                         const Fraction fraction)
+{
+    const std::int64_t scaled =
+        static_cast<std::int64_t>(delta) * fraction.numerator;
+    const std::int64_t half = fraction.denominator / 2;
+    const std::int64_t rounded = scaled >= 0 ? scaled + half : scaled - half;
+    return start + static_cast<std::int32_t>(rounded / fraction.denominator);
+}
+
+constexpr std::int32_t clamp(const std::int32_t value,
+                             const std::int32_t minimum,
+                             const std::int32_t maximum)
+{
+    return value < minimum ? minimum : (value > maximum ? maximum : value);
+}
+
+bool clipLine(std::int32_t& x0,
+              std::int32_t& y0,
+              std::int32_t& x1,
+              std::int32_t& y1)
+{
+    constexpr std::int32_t maximum_x = Canvas::kWidth - 1;
+    constexpr std::int32_t maximum_y = Canvas::kHeight - 1;
+    const std::int32_t delta_x = x1 - x0;
+    const std::int32_t delta_y = y1 - y0;
+    Fraction entering{0, 1};
+    Fraction leaving{1, 1};
+
+    // Liang-Barsky clipping keeps work bounded to four edge tests. Fractions
+    // are compared exactly, avoiding floating point and direction-dependent
+    // false rejection at a viewport corner.
+    if (!narrowInterval(-delta_x, x0, entering, leaving) ||
+        !narrowInterval(delta_x, maximum_x - x0, entering, leaving) ||
+        !narrowInterval(-delta_y, y0, entering, leaving) ||
+        !narrowInterval(delta_y, maximum_y - y0, entering, leaving)) {
+        return false;
+    }
+
+    const std::int32_t clipped_x0 = interpolate(x0, delta_x, entering);
+    const std::int32_t clipped_y0 = interpolate(y0, delta_y, entering);
+    const std::int32_t clipped_x1 = interpolate(x0, delta_x, leaving);
+    const std::int32_t clipped_y1 = interpolate(y0, delta_y, leaving);
+    x0 = clamp(clipped_x0, 0, maximum_x);
+    y0 = clamp(clipped_y0, 0, maximum_y);
+    x1 = clamp(clipped_x1, 0, maximum_x);
+    y1 = clamp(clipped_y1, 0, maximum_y);
+    return true;
 }
 
 constexpr std::int16_t smaller(const std::int16_t left, const std::int16_t right)
@@ -101,24 +201,34 @@ void Canvas::line(std::int16_t x0,
                   const std::int16_t y1,
                   const PixelOperation operation)
 {
-    const std::int16_t dx = absolute(static_cast<std::int16_t>(x1 - x0));
-    const std::int16_t sx = x0 < x1 ? 1 : -1;
-    const std::int16_t dy = static_cast<std::int16_t>(-absolute(static_cast<std::int16_t>(y1 - y0)));
-    const std::int16_t sy = y0 < y1 ? 1 : -1;
-    std::int16_t error = static_cast<std::int16_t>(dx + dy);
+    std::int32_t start_x = x0;
+    std::int32_t start_y = y0;
+    std::int32_t end_x = x1;
+    std::int32_t end_y = y1;
+    if (!clipLine(start_x, start_y, end_x, end_y)) {
+        return;
+    }
+
+    const std::int32_t dx = start_x < end_x ? end_x - start_x : start_x - end_x;
+    const std::int32_t step_x = start_x < end_x ? 1 : -1;
+    const std::int32_t dy = -(start_y < end_y ? end_y - start_y : start_y - end_y);
+    const std::int32_t step_y = start_y < end_y ? 1 : -1;
+    std::int32_t error = dx + dy;
     for (;;) {
-        pixel(x0, y0, operation);
-        if (x0 == x1 && y0 == y1) {
+        pixel(static_cast<std::int16_t>(start_x),
+              static_cast<std::int16_t>(start_y),
+              operation);
+        if (start_x == end_x && start_y == end_y) {
             break;
         }
-        const std::int16_t twice_error = static_cast<std::int16_t>(2 * error);
+        const std::int32_t twice_error = 2 * error;
         if (twice_error >= dy) {
-            error = static_cast<std::int16_t>(error + dy);
-            x0 = static_cast<std::int16_t>(x0 + sx);
+            error += dy;
+            start_x += step_x;
         }
         if (twice_error <= dx) {
-            error = static_cast<std::int16_t>(error + dx);
-            y0 = static_cast<std::int16_t>(y0 + sy);
+            error += dx;
+            start_y += step_y;
         }
     }
 }

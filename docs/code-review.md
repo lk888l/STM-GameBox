@@ -6,7 +6,7 @@
 
 | 领域 | 原问题或风险 | 当前处理 |
 |---|---|---|
-| OLED | 运行期 blocking I2C 占用 CPU | 差分页传输改为 I2C1 TX DMA；任务睡眠等待，有超时、abort、错误计数 |
+| OLED | 运行期 blocking I2C 占用 CPU；命令栈缓冲可能先于 DMA 失效；F1 HAL abort 回调上下文与名称不符 | 差分页传输改为 I2C1 TX DMA；命令/页面统一使用成员缓冲，原子标记活动传输；超时或错误后在任务上下文同步重建 I2C/DMA |
 | 蜂鸣器 | TIM3 音频频率中断持续占用 CPU；PA12 不是 TIM3 输出通道 | TIM3_UP circular DMA 交替写 GPIOA BSRR，关闭 TIM3 IRQ |
 | 串口 | 无独立所有权，诊断可能阻塞输入 | Observer 发布订阅 + 固定队列 + 低优先级 USART1 TX DMA 任务 |
 | ADC | 单点轮询采样熵较弱 | DMA 收集 16 样本，与 UID/tick 混合；5 ms 失败回退 |
@@ -20,6 +20,9 @@
 | 内存 | 隐式堆、队列无限增长和任务栈不透明 | FreeRTOS 全静态；固定容量；post-link 无堆审计；System 页显示最小栈余量 |
 | RTC | F1 HAL 日期在 MCU 复位后丢失 | Backup Register 日期锚点、校验和启动规范化 |
 | 菜单 | 功能清单与实际入口容易再次不一致 | constexpr 六游戏表，并增加入口数量、顺序和 isGame 分类测试 |
+| UI 动画 | 页面/卡片弹簧未稳定时静默丢弃有效输入，且 C++ 动画速度只有参考实现约一半 | 动画改为只影响呈现，输入可在过渡中继续更新目标；每帧四个固定步恢复参考时长 |
+| Canvas | Bresenham 使用 `int16_t` 计算极端坐标差，溢出后可能永久循环 | 先以精确有理数 Liang–Barsky 裁剪，再以 `int32_t` 光栅化；增加极端坐标回归测试 |
+| 工具链 | 缺少可重复 CI 和路径敏感静态分析入口 | 增加跨平台验证脚本、`Analyze` preset 和固定 action 提交 SHA 的 GitHub Actions |
 
 ## 审查后保留的设计
 
@@ -32,11 +35,14 @@
 ## 验证结果
 
 - Arm GNU Debug 与 Release 均在 `-Werror` 下链接成功；
+- GCC `-fanalyzer` 构建成功；已知 ETL `string_view` 建模噪声与故障停机循环类别显式隔离，其余诊断仍按错误处理；
 - post-build 无堆符号检查通过；
 - 本机测试覆盖按键、tick 回绕、Tween、六游戏菜单、五个游戏模型、Canvas、设置、日历和模块回滚；
 - OLED 菜单 BMP 预览已生成并人工检查布局；
 - ELF 符号表确认 DMA1 Channel 1/4/6、I2C1、USART1 和 HAL 完成回调由强符号实现，TIM3 handler 保持未启用；
 - ST-LINK Utility CLI 已通过 100 kHz SWD + connect-under-reset 写入 Release HEX，读回校验 OK；
+- OpenOCD 已通过同一克隆 ST-Link 在约 0.59 V 的误报下识别 STM32F103、写入并校验最新 Debug ELF；
+- 调试发现并恢复了目标板遗留的 RTC backup-domain 冻结状态，十个 Backup Register 和 RTC 计数在复位前后逐项还原；恢复后 FreeRTOS 运行、I2C/DMA 均 READY，OLED DMA=16、错误=0、超时=0、输入丢弃=0，CFSR/HFSR=0；
 - 真机 HOTPLUG 检查确认核心处于 FreeRTOS 空闲 Sleep、HAL tick 持续推进、调度器已运行且共有 5 个任务；
 - ADC DMA 完成=1/错误=0；OLED prepared/shadow=1、DMA TX=16、错误=0、超时=0；USART1 TX DMA 完成=1、错误=0、丢弃=0、HAL 状态 READY；
 - ST-Link VCP 的 COM15 没有收到 PA9 数据，MCU 端寄存器与服务计数已证明发送完成，因此当前板上很可能没有把 VCP RX 与 PA9 相连；
@@ -47,6 +53,6 @@
 1. 人工操作八个物理按键，按硬件文档执行六游戏和蜂鸣器 DMA 压力验收；
 2. 真机运行 10–30 分钟后记录 System 页最小栈余量，再决定是否收缩任务栈；静态分析不能代替高水位数据；
 3. 在产品化阶段加入 IWDG，并设计“启动、喂狗、故障记录、调试暂停”策略；
-4. 若实际 OLED 总线可能被热插拔或从设备拉死，可补充 9 个 SCL 脉冲和 I2C 外设重初始化的总线恢复流程；
-5. Debug Flash 已接近 90%，后续大图片/中文字库应做按需压缩或仅在 Release 纳入，同时保持 Debug 可链接；
+4. 超时路径现已重建 I2C 外设与 TX DMA；若实际 OLED 会把 SDA 持续拉低，再补充 9 个 SCL 脉冲的物理总线解锁；
+5. Debug Flash 已达到 91.91%，后续大图片/中文字库应做按需压缩或仅在 Release 纳入，同时保持 Debug 可链接；
 6. 游戏随机源用于玩法足够，但不具备密码学安全性。

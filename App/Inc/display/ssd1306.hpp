@@ -28,7 +28,7 @@ public:
     [[nodiscard]] std::uint32_t dmaTransferCount() const { return dma_transfer_count_; }
     [[nodiscard]] std::uint32_t timeoutCount() const { return timeout_count_; }
 
-    /** HAL callback bridge; only the I2C ISR calls this function. */
+    /** HAL callback bridge; only an I2C/DMA ISR calls this function. */
     void completeTransferFromIsr(bool success);
 
 protected:
@@ -43,6 +43,7 @@ private:
     [[nodiscard]] bool command(std::uint8_t value);
     [[nodiscard]] bool transmitPage(std::uint8_t page, const std::uint8_t* pixels);
     [[nodiscard]] bool transmit(std::uint8_t* bytes, std::uint16_t count);
+    [[nodiscard]] bool recoverBus();
 
     I2C_HandleTypeDef& bus_;
     std::uint8_t shadow_[Canvas::kBufferSize]{};
@@ -50,6 +51,7 @@ private:
     StaticSemaphore_t completion_control_block_{};
     SemaphoreHandle_t completion_{nullptr};
     std::atomic<bool> transfer_succeeded_{false};
+    std::atomic<bool> dma_transfer_active_{false};
     bool prepared_{false};
     bool shadow_valid_{false};
     std::uint32_t error_count_{0U};

@@ -6,9 +6,7 @@
             "hidden": true,
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build/${presetName}",
-		    "toolchainFile": "${sourceDir}/cmake/gcc-arm-none-eabi.cmake",
-            "cacheVariables": {
-            }
+            "toolchainFile": "${sourceDir}/cmake/gcc-arm-none-eabi.cmake"
         },
         {
             "name": "Debug",
@@ -23,6 +21,13 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release"
             }
+        },
+        {
+            "name": "Analyze",
+            "inherits": "Debug",
+            "cacheVariables": {
+                "GAMEBOX_ENABLE_ANALYZER": "ON"
+            }
         }
     ],
     "buildPresets": [
@@ -33,6 +38,10 @@
         {
             "name": "Release",
             "configurePreset": "Release"
+        },
+        {
+            "name": "Analyze",
+            "configurePreset": "Analyze"
         }
     ]
 }

@@ -26,28 +26,22 @@ extern "C" void HAL_I2C_ErrorCallback(I2C_HandleTypeDef* const bus)
     }
 }
 
-extern "C" void HAL_I2C_AbortCpltCallback(I2C_HandleTypeDef* const bus)
-{
-    Ssd1306* const display = active_display.load(std::memory_order_acquire);
-    if (display != nullptr && bus != nullptr && bus->Instance == I2C1) {
-        display->completeTransferFromIsr(false);
-    }
-}
-
 Ssd1306::Ssd1306(I2C_HandleTypeDef& bus) : bus_(bus)
 {
 }
 
 bool Ssd1306::commands(const std::uint8_t* const values, const std::uint16_t count)
 {
-    std::uint8_t packet[32]{};
-    if (values == nullptr || count == 0U ||
-        static_cast<std::size_t>(count) + 1U > sizeof(packet)) {
+    if (dma_transfer_active_.load(std::memory_order_acquire) ||
+        values == nullptr || count == 0U ||
+        static_cast<std::size_t>(count) + 1U > sizeof(transfer_)) {
         return false;
     }
-    packet[0] = 0x00U;
-    std::memcpy(&packet[1], values, count);
-    return transmit(packet, static_cast<std::uint16_t>(count + 1U));
+    // DMA always reads from storage owned by this service. The buffer remains
+    // valid even while timeout recovery is bringing the peripheral to idle.
+    transfer_[0] = 0x00U;
+    std::memcpy(&transfer_[1], values, count);
+    return transmit(transfer_, static_cast<std::uint16_t>(count + 1U));
 }
 
 bool Ssd1306::command(const std::uint8_t value)
@@ -67,6 +61,7 @@ bool Ssd1306::prepare()
     error_count_ = 0U;
     dma_transfer_count_ = 0U;
     timeout_count_ = 0U;
+    dma_transfer_active_.store(false, std::memory_order_relaxed);
     prepared_ = false;
     shadow_valid_ = false;
     if (__get_PRIMASK() != 0U) {
@@ -104,6 +99,7 @@ bool Ssd1306::onDeinitialize()
 {
     shadow_valid_ = false;
     prepared_ = false;
+    dma_transfer_active_.store(false, std::memory_order_relaxed);
     Ssd1306* expected = this;
     (void)active_display.compare_exchange_strong(expected,
                                                  nullptr,
@@ -118,12 +114,38 @@ bool Ssd1306::onDeinitialize()
 void Ssd1306::completeTransferFromIsr(const bool success)
 {
     transfer_succeeded_.store(success, std::memory_order_release);
+    dma_transfer_active_.store(false, std::memory_order_release);
     if (completion_ == nullptr) {
         return;
     }
     BaseType_t higher_priority_task_woken = pdFALSE;
     (void)xSemaphoreGiveFromISR(completion_, &higher_priority_task_woken);
     portYIELD_FROM_ISR(higher_priority_task_woken);
+}
+
+bool Ssd1306::recoverBus()
+{
+    // Avoid HAL_I2C_Master_Abort_IT here: STM32F1 HAL invokes its nominally
+    // interrupt-mode abort callback synchronously, and its TX timeout race can
+    // select an unconfigured RX DMA handle. DeInit synchronously disables I2C1
+    // and DMA1 Channel 6 before Init restores the existing 400 kHz setup.
+    shadow_valid_ = false;
+    if (HAL_I2C_DeInit(&bus_) != HAL_OK) {
+        return false;
+    }
+    dma_transfer_active_.store(false, std::memory_order_release);
+    transfer_succeeded_.store(false, std::memory_order_relaxed);
+    HAL_NVIC_ClearPendingIRQ(DMA1_Channel6_IRQn);
+    HAL_NVIC_ClearPendingIRQ(I2C1_EV_IRQn);
+    HAL_NVIC_ClearPendingIRQ(I2C1_ER_IRQn);
+    if (HAL_I2C_Init(&bus_) != HAL_OK) {
+        return false;
+    }
+    while (completion_ != nullptr && xSemaphoreTake(completion_, 0U) == pdTRUE) {
+    }
+    return HAL_I2C_GetState(&bus_) == HAL_I2C_STATE_READY &&
+           bus_.hdmatx != nullptr &&
+           HAL_DMA_GetState(bus_.hdmatx) == HAL_DMA_STATE_READY;
 }
 
 bool Ssd1306::transmit(std::uint8_t* const bytes, const std::uint16_t count)
@@ -150,20 +172,23 @@ bool Ssd1306::transmit(std::uint8_t* const bytes, const std::uint16_t count)
     while (xSemaphoreTake(completion_, 0U) == pdTRUE) {
     }
     transfer_succeeded_.store(false, std::memory_order_relaxed);
+    dma_transfer_active_.store(true, std::memory_order_release);
     if (HAL_I2C_Master_Transmit_DMA(&bus_, kAddress, bytes, count) != HAL_OK) {
+        dma_transfer_active_.store(false, std::memory_order_release);
         ++error_count_;
+        (void)recoverBus();
         return false;
     }
     ++dma_transfer_count_;
     if (xSemaphoreTake(completion_, pdMS_TO_TICKS(kTimeoutMs)) != pdTRUE) {
         ++timeout_count_;
         ++error_count_;
-        (void)HAL_I2C_Master_Abort_IT(&bus_, kAddress);
-        (void)xSemaphoreTake(completion_, pdMS_TO_TICKS(2U));
+        (void)recoverBus();
         return false;
     }
     if (!transfer_succeeded_.load(std::memory_order_acquire)) {
         ++error_count_;
+        (void)recoverBus();
         return false;
     }
     return true;

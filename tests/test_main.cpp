@@ -306,6 +306,37 @@ void testCanvas()
     check(canvas.dirtyPages() == 0x81U, "canvas must track dirty pages");
     canvas.drawText(3, 3, "A");
     check(canvas.dirtyPages() != 0U, "text rendering must mark changed pages");
+
+    canvas.clear();
+    canvas.clearDirty();
+    canvas.line(std::numeric_limits<std::int16_t>::min(),
+                std::numeric_limits<std::int16_t>::min(),
+                0,
+                0);
+    check((canvas.data()[0] & 0x01U) != 0U,
+          "extreme diagonal line must terminate and clip to the top-left pixel");
+
+    canvas.clear();
+    canvas.clearDirty();
+    canvas.line(std::numeric_limits<std::int16_t>::min(),
+                32,
+                std::numeric_limits<std::int16_t>::max(),
+                32);
+    bool complete_row = true;
+    for (std::size_t x = 0U; x < gamebox::display::Canvas::kWidth; ++x) {
+        const std::size_t offset = 4U * gamebox::display::Canvas::kWidth + x;
+        complete_row = complete_row && (canvas.data()[offset] & 0x01U) != 0U;
+    }
+    check(complete_row, "cross-screen extreme line must retain every visible pixel");
+
+    canvas.clear();
+    canvas.clearDirty();
+    canvas.line(std::numeric_limits<std::int16_t>::min(),
+                std::numeric_limits<std::int16_t>::min(),
+                std::numeric_limits<std::int16_t>::min(),
+                std::numeric_limits<std::int16_t>::max());
+    check(canvas.dirtyPages() == 0U,
+          "fully off-screen extreme line must be rejected without touching the canvas");
 }
 
 void testSettingsCodec()

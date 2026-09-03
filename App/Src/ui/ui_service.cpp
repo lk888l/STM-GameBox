@@ -5,6 +5,7 @@ namespace gamebox::ui {
 namespace {
 
 constexpr TickType_t kFramePeriod = pdMS_TO_TICKS(33U);
+constexpr std::uint8_t kMotionStepsPerFrame = 4U;
 constexpr std::uint32_t kUiStackDepth = 384U;
 constexpr std::uint8_t kVisibleRows = 3U;
 constexpr std::int16_t kFirstRowY = 14;
@@ -192,9 +193,9 @@ SpringSpeed UiService::springSpeed() const
 void UiService::stepMotion()
 {
     const SpringSpeed speed = springSpeed();
-    // The Rust/Embassy UI advances its 60 Hz fixed-point simulation twice per
-    // 30 FPS OLED frame. Keep that cadence so both firmwares feel identical.
-    for (std::uint8_t step = 0U; step < 2U; ++step) {
+    // Embassy advances two fixed steps every 16 ms. Four steps per 33 ms OLED
+    // frame preserve that motion duration without exceeding the I2C frame budget.
+    for (std::uint8_t step = 0U; step < kMotionStepsPerFrame; ++step) {
         page_spring_.step(speed);
         selection_spring_.step(speed);
         selection_width_spring_.step(speed);
@@ -271,9 +272,8 @@ void UiService::handleEvent(const input::ButtonEvent& event, const std::uint32_t
     last_event_ = event;
     ++event_count_;
 
-    if (!page_spring_.settled()) {
-        return;
-    }
+    // Motion is presentation state, not an input lock. Retargeting a transition
+    // is preferable to silently discarding a valid button event.
 
     // Piano deliberately uses Back as its eighth note. A long Back press exits.
     if (current_view_ == View::piano) {
@@ -352,9 +352,6 @@ void UiService::handleMenuEvent(const input::ButtonEvent& event,
                                   event.type == input::ButtonEventType::repeat;
     if (navigation_event) {
         if (current_view_ == View::home) {
-            if (!carousel_spring_.settled()) {
-                return;
-            }
             if (event.button == input::Button::left || event.button == input::Button::up) {
                 moveSelection(-1, now_ms);
             } else if (event.button == input::Button::right ||
