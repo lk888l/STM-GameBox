@@ -10,5 +10,4 @@ publish.workspace = true
 default = []
 
 [dependencies]
-embedded-graphics.workspace = true
 

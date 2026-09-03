@@ -1,3 +1,4 @@
-//! MCU-specific persistence adapters.
+//! MCU-specific hardware adapters.
 
+pub mod rtc;
 pub mod storage;

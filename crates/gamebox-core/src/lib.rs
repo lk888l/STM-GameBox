@@ -9,6 +9,8 @@
 
 pub mod app;
 pub mod button;
+pub mod calendar;
+pub mod games;
 pub mod menu;
 pub mod motion;
 pub mod settings;
@@ -16,7 +18,7 @@ pub mod snake;
 pub mod storage;
 pub mod ui;
 
-pub use app::{App, AppEffect, AppMode, RenderSchedule};
+pub use app::{App, AppEffect, AppMode, RenderSchedule, SystemStats};
 pub use button::{ButtonBank, ButtonConfig, Gesture, Key, KeyEvent, key_mask};
-pub use settings::{AnimationSpeed, CursorStyle, Settings};
+pub use settings::{Brightness, HomeHeaderMode, MotionLevel, Settings};
 pub use storage::PersistentData;

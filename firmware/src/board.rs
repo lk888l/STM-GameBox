@@ -1,12 +1,12 @@
 //! Board pin contract, clocks, and electrical policy.
 
 use embassy_stm32::{
-    gpio::SwjCfg,
+    gpio::{Input, SwjCfg},
     i2c,
     pac::i2c::vals::{Duty, FS},
     rcc::{
-        ADCPrescaler, AHBPrescaler, APBPrescaler, Hse, HseMode, Pll, PllMul, PllPreDiv, PllSource,
-        Sysclk,
+        ADCPrescaler, AHBPrescaler, APBPrescaler, Hse, HseMode, LsConfig, Pll, PllMul, PllPreDiv,
+        PllSource, Sysclk,
     },
     time::Hertz,
 };
@@ -28,6 +28,13 @@ pub const OLED_I2C_FREQUENCY_HZ: u32 = 400_000;
 /// cancellation and recovery independent of an I²C interrupt.
 pub const OLED_OPERATION_TIMEOUT: Duration = Duration::from_millis(80);
 
+/// Read all eight active-low controls from one coherent GPIOB IDR snapshot.
+#[must_use]
+pub fn sample_buttons(_configured_inputs: &[Input<'_>; 8]) -> [bool; 8] {
+    let levels = embassy_stm32::pac::GPIOB.idr().read().0;
+    [7_u8, 5, 6, 4, 12, 13, 14, 15].map(|pin| levels & (1_u32 << pin) == 0)
+}
+
 /// Return a 72 MHz clock tree that keeps APB1 and ADC within datasheet limits.
 #[must_use]
 pub fn mcu_config() -> embassy_stm32::Config {
@@ -47,6 +54,7 @@ pub fn mcu_config() -> embassy_stm32::Config {
     config.rcc.apb1_pre = APBPrescaler::DIV2;
     config.rcc.apb2_pre = APBPrescaler::DIV1;
     config.rcc.adc_pre = ADCPrescaler::DIV6;
+    config.rcc.ls = LsConfig::default_lse();
 
     // PB4 is the right button on the original PCB. SWD remains enabled on
     // PA13/PA14, while the unused JTAG port releases PB4 (and PA15/PB3).

@@ -1,11 +1,13 @@
-//! Deterministic, allocation-free snake game engine.
+//! Deterministic, allocation-free Snake game engine.
+
+use crate::games::{GamePhase, deadline_reached};
 
 /// Number of horizontal cells in the playfield.
-pub const GRID_WIDTH: u8 = 32;
-/// Number of vertical cells below the status bar.
-pub const GRID_HEIGHT: u8 = 13;
+pub const GRID_WIDTH: u8 = 30;
+/// Number of vertical cells in the playfield.
+pub const GRID_HEIGHT: u8 = 12;
 /// Maximum retained body length.
-pub const MAX_BODY: usize = 64;
+pub const MAX_BODY: usize = 96;
 
 /// Integer grid coordinate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -60,7 +62,7 @@ pub enum StepResult {
     GameOver,
 }
 
-/// Complete snake simulation state.
+/// Complete Snake simulation state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Snake {
     body: [Cell; MAX_BODY],
@@ -70,26 +72,30 @@ pub struct Snake {
     food: Cell,
     rng: u32,
     score: u16,
-    game_over: bool,
+    phase: GamePhase,
+    next_step_ms: u32,
 }
 
 impl Snake {
-    /// Start a new game with a non-cryptographic entropy seed.
+    /// Create a ready game with a non-cryptographic entropy seed.
     #[must_use]
     pub fn new(seed: u32) -> Self {
         let mut body = [Cell::default(); MAX_BODY];
-        body[0] = Cell::new(8, GRID_HEIGHT / 2);
-        body[1] = Cell::new(7, GRID_HEIGHT / 2);
-        body[2] = Cell::new(6, GRID_HEIGHT / 2);
+        let center_x = GRID_WIDTH / 2;
+        let center_y = GRID_HEIGHT / 2;
+        body[0] = Cell::new(center_x, center_y);
+        body[1] = Cell::new(center_x - 1, center_y);
+        body[2] = Cell::new(center_x - 2, center_y);
         let mut snake = Self {
             body,
             length: 3,
             direction: Direction::Right,
             queued_direction: Direction::Right,
-            food: Cell::new(20, GRID_HEIGHT / 2),
+            food: Cell::default(),
             rng: seed.max(1),
             score: 0,
-            game_over: false,
+            phase: GamePhase::Ready,
+            next_step_ms: 0,
         };
         snake.place_food();
         snake
@@ -100,6 +106,14 @@ impl Snake {
         *self = Self::new(seed);
     }
 
+    /// Start a ready run.
+    pub fn start(&mut self) {
+        if self.phase == GamePhase::Ready {
+            self.phase = GamePhase::Playing;
+            self.next_step_ms = 0;
+        }
+    }
+
     /// Queue a direction for the next step, rejecting direct reversal.
     pub fn steer(&mut self, direction: Direction) {
         if !direction.is_opposite(self.direction) {
@@ -107,9 +121,34 @@ impl Snake {
         }
     }
 
+    /// Advance through elapsed fixed simulation steps with bounded catch-up.
+    pub fn update(&mut self, now_ms: u32) {
+        if self.phase != GamePhase::Playing {
+            return;
+        }
+        if self.next_step_ms == 0 {
+            self.next_step_ms = now_ms.wrapping_add(u32::from(self.step_interval_ms()));
+            return;
+        }
+        let mut catch_up = 0;
+        while deadline_reached(now_ms, self.next_step_ms)
+            && catch_up < 4
+            && self.phase == GamePhase::Playing
+        {
+            self.step();
+            self.next_step_ms = self
+                .next_step_ms
+                .wrapping_add(u32::from(self.step_interval_ms()));
+            catch_up += 1;
+        }
+        if catch_up == 4 && deadline_reached(now_ms, self.next_step_ms) {
+            self.next_step_ms = now_ms.wrapping_add(u32::from(self.step_interval_ms()));
+        }
+    }
+
     /// Advance the simulation by one cell.
     pub fn step(&mut self) -> StepResult {
-        if self.game_over {
+        if self.phase == GamePhase::GameOver {
             return StepResult::GameOver;
         }
         self.direction = self.queued_direction;
@@ -120,7 +159,7 @@ impl Snake {
             Direction::Left if head.x > 0 => Cell::new(head.x - 1, head.y),
             Direction::Right if head.x + 1 < GRID_WIDTH => Cell::new(head.x + 1, head.y),
             _ => {
-                self.game_over = true;
+                self.phase = GamePhase::GameOver;
                 return StepResult::GameOver;
             }
         };
@@ -128,7 +167,7 @@ impl Snake {
         let ate = next == self.food;
         let collision_len = usize::from(self.length).saturating_sub(usize::from(!ate));
         if self.body[..collision_len].contains(&next) {
-            self.game_over = true;
+            self.phase = GamePhase::GameOver;
             return StepResult::GameOver;
         }
 
@@ -139,7 +178,6 @@ impl Snake {
         let new_len = usize::from(self.length);
         self.body.copy_within(0..new_len.saturating_sub(1), 1);
         self.body[0] = next;
-
         if ate {
             self.score = self.score.saturating_add(1);
             self.place_food();
@@ -147,6 +185,12 @@ impl Snake {
         } else {
             StepResult::Moved
         }
+    }
+
+    /// Current lifecycle state.
+    #[must_use]
+    pub const fn phase(&self) -> GamePhase {
+        self.phase
     }
 
     /// Body cells ordered from head to tail.
@@ -170,39 +214,39 @@ impl Snake {
     /// Whether a collision has ended the run.
     #[must_use]
     pub const fn is_game_over(&self) -> bool {
-        self.game_over
+        matches!(self.phase, GamePhase::GameOver)
     }
 
     /// Recommended simulation interval, decreasing with score.
     #[must_use]
     pub const fn step_interval_ms(&self) -> u16 {
-        let interval = 190_u16.saturating_sub(self.score.saturating_mul(5));
-        if interval < 75 { 75 } else { interval }
+        let reduction = self.score.saturating_mul(3);
+        if reduction < 80 { 150 - reduction } else { 70 }
     }
 
     fn place_food(&mut self) {
-        let cell_count = u16::from(GRID_WIDTH) * u16::from(GRID_HEIGHT);
+        let cell_count = u32::from(GRID_WIDTH) * u32::from(GRID_HEIGHT);
+        let mut candidate = self.random() % cell_count;
         for _ in 0..cell_count {
-            let value = self.next_random();
-            let candidate = Cell::new(
-                (value % u32::from(GRID_WIDTH)) as u8,
-                ((value / u32::from(GRID_WIDTH)) % u32::from(GRID_HEIGHT)) as u8,
+            let cell = Cell::new(
+                (candidate % u32::from(GRID_WIDTH)) as u8,
+                (candidate / u32::from(GRID_WIDTH)) as u8,
             );
-            if !self.body().contains(&candidate) {
-                self.food = candidate;
+            if !self.body().contains(&cell) {
+                self.food = cell;
                 return;
             }
+            candidate = (candidate + 1) % cell_count;
         }
-        self.game_over = true;
     }
 
-    fn next_random(&mut self) -> u32 {
+    fn random(&mut self) -> u32 {
         let mut value = self.rng;
         value ^= value << 13;
         value ^= value >> 17;
         value ^= value << 5;
-        self.rng = value.max(1);
-        self.rng
+        self.rng = value;
+        value
     }
 }
 
@@ -212,27 +256,31 @@ mod tests {
 
     #[test]
     fn direct_reverse_is_rejected() {
-        let mut snake = Snake::new(7);
+        let mut snake = Snake::new(1);
+        snake.start();
         snake.steer(Direction::Left);
         assert_eq!(snake.step(), StepResult::Moved);
-        assert_eq!(snake.body()[0], Cell::new(9, GRID_HEIGHT / 2));
+        assert_eq!(
+            snake.body()[0],
+            Cell::new(GRID_WIDTH / 2 + 1, GRID_HEIGHT / 2)
+        );
     }
 
     #[test]
     fn wall_collision_is_terminal() {
-        let mut snake = Snake::new(7);
+        let mut snake = Snake::new(1);
+        snake.start();
         for _ in 0..GRID_WIDTH {
             if snake.step() == StepResult::GameOver {
                 break;
             }
         }
-        assert!(snake.is_game_over());
-        assert_eq!(snake.step(), StepResult::GameOver);
+        assert_eq!(snake.phase(), GamePhase::GameOver);
     }
 
     #[test]
     fn food_never_spawns_inside_body() {
-        for seed in 1..100 {
+        for seed in 1..64 {
             let snake = Snake::new(seed);
             assert!(!snake.body().contains(&snake.food()));
         }

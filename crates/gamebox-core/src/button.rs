@@ -77,6 +77,8 @@ pub struct KeyEvent {
     pub gesture: Gesture,
     /// Millisecond timestamp, allowed to wrap naturally.
     pub at_ms: u32,
+    /// Stable duration of the associated press, where meaningful.
+    pub held_ms: u32,
 }
 
 impl KeyEvent {
@@ -87,6 +89,18 @@ impl KeyEvent {
             key,
             gesture,
             at_ms,
+            held_ms: 0,
+        }
+    }
+
+    /// Construct an event carrying a saturated stable hold duration.
+    #[must_use]
+    pub const fn with_held(key: Key, gesture: Gesture, at_ms: u32, held_ms: u32) -> Self {
+        Self {
+            key,
+            gesture,
+            at_ms,
+            held_ms,
         }
     }
 }
@@ -128,11 +142,11 @@ impl ButtonConfig {
 impl Default for ButtonConfig {
     fn default() -> Self {
         Self {
-            debounce_ms: 12,
-            double_click_ms: 260,
+            debounce_ms: 20,
+            double_click_ms: 280,
             long_press_ms: 650,
-            repeat_delay_ms: 280,
-            repeat_interval_ms: 95,
+            repeat_delay_ms: 110,
+            repeat_interval_ms: 90,
         }
     }
 }
@@ -157,6 +171,7 @@ struct ButtonState {
     raw_changed_at: u32,
     pressed_at: u32,
     pending_release_at: u32,
+    pending_held_ms: u32,
     repeat_at: u32,
     pending_click: bool,
     long_sent: bool,
@@ -170,6 +185,7 @@ impl ButtonState {
             raw_changed_at: 0,
             pressed_at: 0,
             pending_release_at: 0,
+            pending_held_ms: 0,
             repeat_at: 0,
             pending_click: false,
             long_sent: false,
@@ -198,21 +214,34 @@ impl ButtonState {
                 self.long_sent = false;
                 emit(KeyEvent::new(key, Gesture::Pressed, now_ms));
             } else {
-                emit(KeyEvent::new(key, Gesture::Released, now_ms));
+                let held_ms = elapsed(now_ms, self.pressed_at);
+                emit(KeyEvent::with_held(key, Gesture::Released, now_ms, held_ms));
                 if self.long_sent {
                     self.pending_click = false;
                 } else if self.pending_click {
-                    if elapsed(now_ms, self.pending_release_at) <= u32::from(config.double_click_ms)
+                    if elapsed(now_ms, self.pending_release_at) < u32::from(config.double_click_ms)
                     {
                         self.pending_click = false;
-                        emit(KeyEvent::new(key, Gesture::DoubleClick, now_ms));
+                        emit(KeyEvent::with_held(
+                            key,
+                            Gesture::DoubleClick,
+                            now_ms,
+                            held_ms,
+                        ));
                     } else {
-                        emit(KeyEvent::new(key, Gesture::Click, self.pending_release_at));
+                        emit(KeyEvent::with_held(
+                            key,
+                            Gesture::Click,
+                            self.pending_release_at,
+                            self.pending_held_ms,
+                        ));
                         self.pending_release_at = now_ms;
+                        self.pending_held_ms = held_ms;
                     }
                 } else {
                     self.pending_click = true;
                     self.pending_release_at = now_ms;
+                    self.pending_held_ms = held_ms;
                 }
             }
         }
@@ -222,18 +251,36 @@ impl ButtonState {
                 && elapsed(now_ms, self.pressed_at) >= u32::from(config.long_press_ms)
             {
                 self.long_sent = true;
-                self.pending_click = false;
                 self.repeat_at = now_ms.wrapping_add(u32::from(config.repeat_delay_ms));
-                emit(KeyEvent::new(key, Gesture::LongPress, now_ms));
+                emit(KeyEvent::with_held(
+                    key,
+                    Gesture::LongPress,
+                    now_ms,
+                    elapsed(now_ms, self.pressed_at),
+                ));
             } else if self.long_sent && deadline_reached(now_ms, self.repeat_at) {
-                self.repeat_at = now_ms.wrapping_add(u32::from(config.repeat_interval_ms));
-                emit(KeyEvent::new(key, Gesture::Repeat, now_ms));
+                while deadline_reached(now_ms, self.repeat_at) {
+                    self.repeat_at = self
+                        .repeat_at
+                        .wrapping_add(u32::from(config.repeat_interval_ms));
+                }
+                let held_ms = elapsed(now_ms, self.pressed_at);
+                emit(KeyEvent::with_held(key, Gesture::Repeat, now_ms, held_ms));
             }
-        } else if self.pending_click
-            && elapsed(now_ms, self.pending_release_at) > u32::from(config.double_click_ms)
+        }
+
+        // Independent of the stable level: a following long press must not
+        // swallow the preceding short click when the double window expires.
+        if self.pending_click
+            && elapsed(now_ms, self.pending_release_at) >= u32::from(config.double_click_ms)
         {
             self.pending_click = false;
-            emit(KeyEvent::new(key, Gesture::Click, self.pending_release_at));
+            emit(KeyEvent::with_held(
+                key,
+                Gesture::Click,
+                self.pending_release_at,
+                self.pending_held_ms,
+            ));
         }
     }
 }
@@ -420,8 +467,8 @@ mod tests {
             30,
             [true, false, false, true, false, false, false, false],
         );
-        assert!(events.contains(&KeyEvent::new(Key::Up, Gesture::Pressed, 12)));
-        assert!(events.contains(&KeyEvent::new(Key::Right, Gesture::Pressed, 12)));
+        assert!(events.contains(&KeyEvent::new(Key::Up, Gesture::Pressed, 20)));
+        assert!(events.contains(&KeyEvent::new(Key::Right, Gesture::Pressed, 20)));
         assert_eq!(bank.stable_mask(), key_mask(Key::Up) | key_mask(Key::Right));
     }
 
@@ -443,6 +490,72 @@ mod tests {
             events
                 .iter()
                 .any(|event| { event.key == Key::Left && event.gesture == Gesture::Pressed })
+        );
+    }
+
+    #[test]
+    fn click_is_not_lost_when_the_following_press_becomes_long() {
+        let mut bank = ButtonBank::default();
+        let mut events = run(
+            &mut bank,
+            0,
+            20,
+            [true, false, false, false, false, false, false, false],
+        );
+        events.extend(run(&mut bank, 21, 50, [false; 8]));
+        events.extend(run(
+            &mut bank,
+            51,
+            800,
+            [true, false, false, false, false, false, false, false],
+        ));
+        events.extend(run(&mut bank, 801, 830, [false; 8]));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.gesture == Gesture::Click)
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.gesture == Gesture::LongPress)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn double_click_window_is_exclusive_at_280_ms() {
+        let mut bank = ButtonBank::default();
+        let mut events = run(
+            &mut bank,
+            0,
+            20,
+            [true, false, false, false, false, false, false, false],
+        );
+        events.extend(run(&mut bank, 21, 50, [false; 8]));
+        events.extend(run(
+            &mut bank,
+            51,
+            300,
+            [true, false, false, false, false, false, false, false],
+        ));
+        events.extend(run(&mut bank, 301, 601, [false; 8]));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.gesture == Gesture::DoubleClick)
+                .count(),
+            0
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.gesture == Gesture::Click)
+                .count(),
+            2
         );
     }
 }

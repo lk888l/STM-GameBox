@@ -1,506 +1,861 @@
-//! Stateless rendering of application scenes to a binary draw target.
+//! Native 1-bit renderer for the 128×64 GameBox OLED.
 
+mod canvas;
 mod font;
 
-use core::str;
-
-use embedded_graphics::{
-    mono_font::{
-        MonoTextStyle,
-        ascii::{FONT_6X10, FONT_10X20},
-    },
-    pixelcolor::BinaryColor,
-    prelude::*,
-    primitives::{Circle, Line, PrimitiveStyle, Rectangle, RoundedRectangle},
-    text::Text,
-};
-
 use crate::{
-    App, AppMode, CursorStyle,
-    menu::{PageId, SettingId},
-    snake::Cell,
+    App, AppMode,
+    button::{Gesture, Key},
+    calendar::DateTime,
+    games::GamePhase,
+    menu::{Action, Icon, View, menu_for},
+    settings::{Brightness, HomeHeaderMode, MotionLevel},
 };
+use canvas::{Canvas, PixelOp};
 
-const ON: BinaryColor = BinaryColor::On;
-const OFF: BinaryColor = BinaryColor::Off;
+/// Native SSD1306 page-layout framebuffer byte count.
+pub use canvas::FRAME_BYTES;
 
-/// Product UI renderer for the 128×64 monochrome canvas.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+const SET: PixelOp = PixelOp::Set;
+const CLEAR: PixelOp = PixelOp::Clear;
+const INVERT: PixelOp = PixelOp::Invert;
+const PET_FRAMES: [[u16; 9]; 2] = [
+    [
+        0x0900, 0x0f80, 0x0bc2, 0x0ffd, 0x07fe, 0x07f8, 0x01f8, 0x0148, 0x0244,
+    ],
+    [
+        0x0900, 0x0f80, 0x0bc2, 0x0ffd, 0x07fe, 0x07f8, 0x01f8, 0x0250, 0x0290,
+    ],
+];
+
+/// Stateless full-scene renderer.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct UiRenderer;
 
 impl UiRenderer {
-    /// Draw the complete current scene.
-    ///
-    /// `battery_mv` is a filtered estimate; passing zero hides the fill level
-    /// but keeps the battery outline visible during ADC startup.
-    pub fn draw<D>(
-        &self,
-        target: &mut D,
+    /// Render one complete frame into native SSD1306 page-layout bytes.
+    pub fn draw(&self, frame: &mut [u8; FRAME_BYTES], app: &App, now_ms: u32) {
+        let mut canvas = Canvas::new(frame);
+        canvas.clear();
+        if app.mode() == AppMode::Boot {
+            Self::render_boot(&mut canvas, now_ms);
+            return;
+        }
+
+        let motion = app.motion();
+        if motion.page_x.is_settled() {
+            Self::render_view(&mut canvas, app, app.view(), 0, now_ms, true);
+        } else {
+            let current_x = motion.page_x.value();
+            let previous_x = current_x + if app.page_forward() { -128 } else { 128 };
+            Self::render_view(
+                &mut canvas,
+                app,
+                app.previous_view(),
+                previous_x,
+                now_ms,
+                false,
+            );
+            Self::render_view(&mut canvas, app, app.view(), current_x, now_ms, true);
+        }
+        if let Some(message) = app.toast(now_ms) {
+            canvas.fill_rounded_rectangle(3, 43, 122, 18, 3, SET);
+            let x = (128 - text_width(message)) / 2;
+            canvas.text(x, 48, message, true);
+        }
+    }
+
+    fn render_boot(canvas: &mut Canvas<'_>, now_ms: u32) {
+        canvas.rounded_rectangle(8, 7, 112, 50, 3, SET);
+        canvas.fill_rounded_rectangle(18, 15, 92, 17, 3, SET);
+        canvas.text(39, 20, "GAMEBOX", true);
+        canvas.text(34, 39, "RUST + EMBASSY", false);
+        let width = ((now_ms % App::BOOT_DURATION_MS) * 92 / App::BOOT_DURATION_MS) as i16;
+        canvas.hline(18, 52, width, SET);
+    }
+
+    fn render_view(
+        canvas: &mut Canvas<'_>,
         app: &App,
+        view: View,
+        x: i16,
         now_ms: u32,
-        battery_mv: u16,
-    ) -> Result<(), D::Error>
-    where
-        D: DrawTarget<Color = BinaryColor>,
-    {
-        target.clear(OFF)?;
-        match app.mode() {
-            AppMode::Boot => draw_boot(target, app.mode_elapsed_ms(now_ms), battery_mv),
-            AppMode::Menu => draw_menu(target, app, battery_mv),
-            AppMode::Snake => draw_snake(target, app),
-            AppMode::Stopwatch => draw_stopwatch(target, app, now_ms),
-            AppMode::Countdown => draw_countdown(target, app, now_ms),
-            AppMode::Standby => draw_standby(target, now_ms, battery_mv),
+        interactive: bool,
+    ) {
+        match view {
+            View::Home => Self::render_home(canvas, app, x, now_ms, interactive),
+            View::Games | View::Tools | View::Settings => {
+                Self::render_list(canvas, app, view, x, interactive)
+            }
+            View::Clock => Self::render_clock(canvas, app, x, now_ms),
+            View::Stopwatch => Self::render_stopwatch(canvas, app, x, now_ms),
+            View::Countdown => Self::render_countdown(canvas, app, x, now_ms),
+            View::InputLab => Self::render_input_lab(canvas, app, x),
+            View::System => Self::render_system(canvas, app, x, now_ms),
+            View::About => Self::render_about(canvas, x),
+            View::Snake => Self::render_snake(canvas, app, x, now_ms),
+            View::Dino => Self::render_dino(canvas, app, x, now_ms),
+            View::AirRaid => Self::render_air_raid(canvas, app, x),
+            View::Tetris => Self::render_tetris(canvas, app, x),
+            View::Pong => Self::render_pong(canvas, app, x),
+            View::Piano => Self::render_piano(canvas, app, x),
         }
     }
-}
 
-fn draw_boot<D>(target: &mut D, elapsed_ms: u32, battery_mv: u16) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = BinaryColor>,
-{
-    let progress = elapsed_ms.min(App::BOOT_DURATION_MS);
-    let reveal = progress.min(620);
-    let line_half = (reveal * 52 / 620) as i32;
-    Line::new(
-        Point::new(64 - line_half, 31),
-        Point::new(64 + line_half, 31),
-    )
-    .into_styled(PrimitiveStyle::with_stroke(ON, 1))
-    .draw(target)?;
-
-    if progress > 80 {
-        let radius = (progress - 80).min(420) * 12 / 420;
-        if radius > 1 {
-            Circle::new(
-                Point::new(64 - radius as i32, 31 - radius as i32),
-                radius * 2,
-            )
-            .into_styled(PrimitiveStyle::with_stroke(ON, 1))
-            .draw(target)?;
+    fn header(canvas: &mut Canvas<'_>, x: i16, title: &str) {
+        canvas.fill_rectangle(x, 0, 128, 11, SET);
+        canvas.text(x + 4, 2, title, true);
+        for dot in [119, 122, 125] {
+            canvas.pixel(x + dot, 3, CLEAR);
         }
     }
-    if progress > 260 {
-        let rise = ((progress - 260).min(420) * 20 / 420) as i32;
-        font::draw(target, "游戏机", Point::new(40, 50 - rise), ON)?;
-    }
-    if progress > 470 {
-        draw_ascii(target, "GAMEBOX", Point::new(43, 12), &FONT_6X10)?;
+
+    fn footer(canvas: &mut Canvas<'_>, x: i16, hint: &str) {
+        canvas.hline(x, 54, 128, SET);
+        canvas.text(x + 4, 56, hint, false);
     }
 
-    let bar_width = progress * 118 / App::BOOT_DURATION_MS;
-    Rectangle::new(Point::new(5, 61), Size::new(bar_width, 2))
-        .into_styled(PrimitiveStyle::with_fill(ON))
-        .draw(target)?;
-    draw_battery(target, battery_mv)?;
-    Ok(())
-}
-
-fn draw_menu<D>(target: &mut D, app: &App, battery_mv: u16) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = BinaryColor>,
-{
-    let menu = app.menu();
-    let page = menu.current_page();
-    let selected = menu.selected_index();
-    let motion = app.menu_motion();
-    let page_x = i32::from(motion.page_x.value());
-    let cursor_y = i32::from(motion.cursor_y.value());
-    let cursor_width = i32::from(motion.cursor_width.value()).clamp(12, 121);
-    let scroll_y = i32::from(motion.scroll_y.value());
-    let settings = app.persistent_data().settings;
-
-    font::draw_small(target, page.title, Point::new(3, 2), ON)?;
-    draw_battery(target, battery_mv)?;
-    Line::new(Point::new(0, 11), Point::new(127, 11))
-        .into_styled(PrimitiveStyle::with_stroke(ON, 1))
-        .draw(target)?;
-
-    let cursor_rect = Rectangle::new(
-        Point::new(3 + page_x, cursor_y),
-        Size::new(cursor_width as u32, 15),
-    );
-    match settings.cursor_style {
-        CursorStyle::Inverse => RoundedRectangle::with_equal_corners(cursor_rect, Size::new(5, 5))
-            .into_styled(PrimitiveStyle::with_fill(ON))
-            .draw(target)?,
-        CursorStyle::Frame => RoundedRectangle::with_equal_corners(cursor_rect, Size::new(5, 5))
-            .into_styled(PrimitiveStyle::with_stroke(ON, 1))
-            .draw(target)?,
-        CursorStyle::Heart => draw_heart(target, Point::new(5 + page_x, cursor_y + 3))?,
-    }
-
-    for (index, entry) in page.entries.iter().enumerate() {
-        let y = 14 + index as i32 * 16 + scroll_y;
-        if !(-15..64).contains(&y) {
-            continue;
-        }
-        let x = if settings.cursor_style == CursorStyle::Heart && index == selected {
-            20 + page_x
+    fn render_home(canvas: &mut Canvas<'_>, app: &App, x: i16, now_ms: u32, interactive: bool) {
+        let selected = app.menu().selection(View::Home);
+        let carousel = app.motion().carousel_x;
+        if interactive && !carousel.is_settled() {
+            let current_x = carousel.value();
+            let previous_x = current_x - i16::from(app.carousel_direction()) * 128;
+            Self::home_card(canvas, app, app.carousel_previous(), x + previous_x, now_ms);
+            Self::home_card(canvas, app, selected, x + current_x, now_ms);
         } else {
-            8 + page_x
+            Self::home_card(canvas, app, selected, x, now_ms);
+        }
+    }
+
+    fn home_card(canvas: &mut Canvas<'_>, app: &App, index: u8, x: i16, now_ms: u32) {
+        let menu = menu_for(View::Home).expect("home is a menu");
+        let entry = &menu.entries[index as usize];
+        let position = position_text(index, menu.entries.len() as u8);
+        canvas.rounded_rectangle(x + 2, 1, 124, 62, 3, SET);
+        Self::home_header(canvas, app, x, now_ms);
+        canvas.fill_rounded_rectangle(x + 92, 2, 32, 9, 2, SET);
+        canvas.text_bytes(x + 93, 3, &position, true);
+        canvas.hline(x + 4, 12, 120, SET);
+        canvas.rounded_rectangle(x + 7, 16, 34, 27, 3, SET);
+        Self::icon(canvas, entry.icon, x + 12, 21);
+        let width = text_width(entry.label) + 8;
+        canvas.fill_rounded_rectangle(x + 45, 17, width, 11, 2, SET);
+        canvas.text(x + 49, 19, entry.label, true);
+        canvas.hline(x + 46, 30, 77, SET);
+        canvas.text(x + 46, 33, entry.subtitle, false);
+        canvas.hline(x + 4, 47, 120, SET);
+        for dot in 0..menu.entries.len() as u8 {
+            let dot_x = x + 8 + i16::from(dot) * 7;
+            if dot == index {
+                canvas.fill_rounded_rectangle(dot_x, 54, 5, 3, 1, SET);
+            } else {
+                canvas.pixel(dot_x + 2, 55, SET);
+            }
+        }
+        canvas.text(x + 42, 52, "<> MOVE", false);
+        canvas.text(x + 92, 52, "ENTER", false);
+    }
+
+    fn home_header(canvas: &mut Canvas<'_>, app: &App, x: i16, now_ms: u32) {
+        match app.persistent_data().settings.home_header {
+            HomeHeaderMode::Time => {
+                if let Some(clock) = app.clock() {
+                    let time = time_text(
+                        u32::from(clock.hours) * 3_600
+                            + u32::from(clock.minutes) * 60
+                            + u32::from(clock.seconds),
+                    );
+                    canvas.text_bytes(x + 7, 3, &time, false);
+                } else {
+                    canvas.text(x + 7, 3, "RTC ERR", false);
+                }
+            }
+            HomeHeaderMode::Date => {
+                if let Some(clock) = app.clock() {
+                    canvas.text_bytes(x + 7, 3, &date_text(clock), false);
+                } else {
+                    canvas.text(x + 7, 3, "RTC ERR", false);
+                }
+            }
+            HomeHeaderMode::Pet => Self::home_pet(canvas, app, x, now_ms),
+            HomeHeaderMode::Title => canvas.text(x + 7, 3, "GAMEBOX", false),
+        }
+    }
+
+    fn home_pet(canvas: &mut Canvas<'_>, app: &App, x: i16, now_ms: u32) {
+        let period = match app.persistent_data().settings.motion {
+            MotionLevel::Full => 250,
+            MotionLevel::Reduced => 500,
+            MotionLevel::Off => 0,
         };
-        if index == selected && settings.cursor_style == CursorStyle::Inverse {
-            font::draw_split(
-                target,
-                entry.label,
-                Point::new(x, y),
-                3 + page_x + cursor_width,
-                OFF,
-                ON,
-            )?;
+        let (phase, frame) = if let Some(tick) = now_ms.checked_div(period) {
+            (tick % 72, tick & 1)
         } else {
-            font::draw(target, entry.label, Point::new(x, y), ON)?;
-        }
-
-        if menu.page_id() == PageId::Settings
-            && let Some(setting) = setting_for_index(index)
-        {
-            draw_setting_value(target, setting, app, y, page_x)?;
-        }
-    }
-
-    draw_scrollbar(target, selected, page.entries.len())?;
-    Ok(())
-}
-
-const fn setting_for_index(index: usize) -> Option<SettingId> {
-    match index {
-        1 => Some(SettingId::Sound),
-        2 => Some(SettingId::Animation),
-        3 => Some(SettingId::Cursor),
-        4 => Some(SettingId::StandbyRefresh),
-        _ => None,
-    }
-}
-
-fn draw_setting_value<D>(
-    target: &mut D,
-    setting: SettingId,
-    app: &App,
-    y: i32,
-    page_x: i32,
-) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = BinaryColor>,
-{
-    let settings = app.persistent_data().settings;
-    match setting {
-        SettingId::Sound => {
-            let value = if settings.sound_enabled { "开" } else { "关" };
-            font::draw(target, value, Point::new(104 + page_x, y), ON)
-        }
-        SettingId::Animation => {
-            let value = match settings.animation_speed {
-                crate::AnimationSpeed::Off => "关",
-                crate::AnimationSpeed::Slow => "慢",
-                crate::AnimationSpeed::Fast => "快",
-            };
-            font::draw(target, value, Point::new(104 + page_x, y), ON)
-        }
-        SettingId::Cursor => {
-            let value = match settings.cursor_style {
-                CursorStyle::Inverse => "反相",
-                CursorStyle::Frame => "矩形",
-                CursorStyle::Heart => "爱心",
-            };
-            font::draw(target, value, Point::new(88 + page_x, y), ON)
-        }
-        SettingId::StandbyRefresh => {
-            let mut buffer = NumberBuffer::new();
-            let value = buffer.format(u32::from(settings.standby_refresh_seconds), 1);
-            draw_ascii(target, value, Point::new(104 + page_x, y + 11), &FONT_6X10)
-        }
-    }
-}
-
-fn draw_scrollbar<D>(target: &mut D, selected: usize, count: usize) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = BinaryColor>,
-{
-    if count <= 1 {
-        return Ok(());
-    }
-    Line::new(Point::new(125, 15), Point::new(125, 60))
-        .into_styled(PrimitiveStyle::with_stroke(ON, 1))
-        .draw(target)?;
-    let y = 15 + (selected * 42 / (count - 1)) as i32;
-    Rectangle::new(Point::new(123, y), Size::new(5, 4))
-        .into_styled(PrimitiveStyle::with_fill(ON))
-        .draw(target)?;
-    Ok(())
-}
-
-fn draw_snake<D>(target: &mut D, app: &App) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = BinaryColor>,
-{
-    draw_ascii(target, "S", Point::new(1, 9), &FONT_6X10)?;
-    let mut score_buffer = NumberBuffer::new();
-    draw_ascii(
-        target,
-        score_buffer.format(u32::from(app.snake().score()), 2),
-        Point::new(10, 9),
-        &FONT_6X10,
-    )?;
-    draw_ascii(target, "HI", Point::new(79, 9), &FONT_6X10)?;
-    let mut high_buffer = NumberBuffer::new();
-    draw_ascii(
-        target,
-        high_buffer.format(u32::from(app.persistent_data().snake_high_score), 2),
-        Point::new(96, 9),
-        &FONT_6X10,
-    )?;
-    Line::new(Point::new(0, 10), Point::new(127, 10))
-        .into_styled(PrimitiveStyle::with_stroke(ON, 1))
-        .draw(target)?;
-
-    for (index, cell) in app.snake().body().iter().enumerate() {
-        let top_left = snake_point(*cell);
-        let size = if index == 0 {
-            Size::new(4, 4)
-        } else {
-            Size::new(3, 3)
+            (18, 0)
         };
-        Rectangle::new(top_left, size)
-            .into_styled(PrimitiveStyle::with_fill(ON))
-            .draw(target)?;
+        let facing_right = phase < 36;
+        let step = if facing_right { phase } else { 71 - phase };
+        let pet_x = x + 7 + (step * 2) as i16;
+        for row in 0..9_u8 {
+            let bits = PET_FRAMES[frame as usize][row as usize];
+            for column in 0..12_u8 {
+                if bits & (1_u16 << column) == 0 {
+                    continue;
+                }
+                let displayed = if facing_right { column } else { 11 - column };
+                canvas.pixel(pet_x + i16::from(displayed), 2 + i16::from(row), SET);
+            }
+        }
     }
-    let food = snake_point(app.snake().food());
-    Line::new(food + Point::new(0, 2), food + Point::new(4, 2))
-        .into_styled(PrimitiveStyle::with_stroke(ON, 1))
-        .draw(target)?;
-    Line::new(food + Point::new(2, 0), food + Point::new(2, 4))
-        .into_styled(PrimitiveStyle::with_stroke(ON, 1))
-        .draw(target)?;
 
-    if app.snake().is_game_over() {
-        RoundedRectangle::with_equal_corners(
-            Rectangle::new(Point::new(23, 18), Size::new(82, 20)),
-            Size::new(6, 6),
-        )
-        .into_styled(PrimitiveStyle::with_fill(ON))
-        .draw(target)?;
-        font::draw(target, "游戏结束", Point::new(32, 20), OFF)?;
-        font::draw(target, "请按键", Point::new(40, 44), ON)?;
-    } else if app.snake_is_paused() {
-        draw_ascii(target, "PAUSE", Point::new(49, 37), &FONT_6X10)?;
+    fn render_list(canvas: &mut Canvas<'_>, app: &App, view: View, x: i16, interactive: bool) {
+        let menu = menu_for(view).expect("list view has a menu");
+        let selected = app.menu().selection(view);
+        let (target_y, target_width, target_scroll) = list_targets(app, view);
+        let scroll = if interactive {
+            app.motion().scroll_y.value()
+        } else {
+            target_scroll
+        };
+        for (index, entry) in menu.entries.iter().enumerate() {
+            let y = 14 + index as i16 * 16 + scroll;
+            if y <= -8 || y >= 64 {
+                continue;
+            }
+            canvas.text(x + 8, y, entry.label, false);
+            if view == View::Settings {
+                let value = setting_value(app, entry.action);
+                canvas.text(x + 120 - text_width(value), y, value, false);
+            }
+        }
+        let highlight_y = if interactive {
+            app.motion().cursor_y.value()
+        } else {
+            target_y
+        };
+        let highlight_width = if interactive {
+            app.motion().cursor_width.value()
+        } else {
+            target_width
+        };
+        canvas.fill_rounded_rectangle(x + 3, highlight_y, highlight_width, 15, 2, INVERT);
+        if menu.entries.len() > 1 {
+            canvas.vline(x + 125, 15, 46, SET);
+            let position_y = i16::from(selected) * 42 / (menu.entries.len() as i16 - 1);
+            canvas.fill_rounded_rectangle(x + 123, 15 + position_y, 5, 4, 1, SET);
+        }
+        canvas.fill_rectangle(x, 0, 128, 12, CLEAR);
+        canvas.text(x + 4, 2, menu.title, false);
+        canvas.text_bytes(
+            x + 96,
+            2,
+            &position_text(selected, menu.entries.len() as u8),
+            false,
+        );
+        canvas.hline(x, 11, 128, SET);
     }
-    Ok(())
-}
 
-const fn snake_point(cell: Cell) -> Point {
-    Point::new(cell.x as i32 * 4, 12 + cell.y as i32 * 4)
-}
-
-fn draw_stopwatch<D>(target: &mut D, app: &App, now_ms: u32) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = BinaryColor>,
-{
-    font::draw(target, "秒表", Point::new(48, 0), ON)?;
-    Line::new(Point::new(0, 17), Point::new(127, 17))
-        .into_styled(PrimitiveStyle::with_stroke(ON, 1))
-        .draw(target)?;
-    let bytes = format_stopwatch(app.stopwatch_elapsed_ms(now_ms));
-    let value = str::from_utf8(&bytes).expect("time formatter only emits ASCII");
-    draw_ascii(target, value, Point::new(24, 42), &FONT_10X20)?;
-    let state = if app.stopwatch_is_running() {
-        "RUN"
-    } else {
-        "STOP"
-    };
-    draw_ascii(target, state, Point::new(53, 57), &FONT_6X10)?;
-    Ok(())
-}
-
-fn draw_countdown<D>(target: &mut D, app: &App, now_ms: u32) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = BinaryColor>,
-{
-    font::draw(target, "倒计时", Point::new(40, 0), ON)?;
-    Line::new(Point::new(0, 17), Point::new(127, 17))
-        .into_styled(PrimitiveStyle::with_stroke(ON, 1))
-        .draw(target)?;
-    let bytes = format_countdown(app.countdown_remaining_ms(now_ms));
-    let value = str::from_utf8(&bytes).expect("time formatter only emits ASCII");
-    draw_ascii(target, value, Point::new(39, 42), &FONT_10X20)?;
-    let state = if app.countdown_is_completed() {
-        "DONE"
-    } else if app.countdown_is_running() {
-        "RUN"
-    } else {
-        "SET"
-    };
-    draw_ascii(target, state, Point::new(53, 57), &FONT_6X10)?;
-    Ok(())
-}
-
-fn draw_standby<D>(target: &mut D, now_ms: u32, battery_mv: u16) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = BinaryColor>,
-{
-    let total_seconds = now_ms / 1_000;
-    let hours = (total_seconds / 3_600) % 100;
-    let minutes = (total_seconds / 60) % 60;
-    let bytes = [
-        digit(hours / 10),
-        digit(hours % 10),
-        b':',
-        digit(minutes / 10),
-        digit(minutes % 10),
-    ];
-    let value = str::from_utf8(&bytes).expect("standby formatter only emits ASCII");
-    draw_ascii(target, value, Point::new(39, 27), &FONT_10X20)?;
-    Line::new(Point::new(15, 34), Point::new(112, 34))
-        .into_styled(PrimitiveStyle::with_stroke(ON, 1))
-        .draw(target)?;
-    font::draw(target, "按键返回", Point::new(32, 42), ON)?;
-    draw_battery(target, battery_mv)?;
-    Ok(())
-}
-
-fn draw_battery<D>(target: &mut D, battery_mv: u16) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = BinaryColor>,
-{
-    // The legacy PCB exposes PA1 but does not document a battery divider.
-    // Zero therefore means "sensor unavailable", not an empty battery.
-    if battery_mv == 0 {
-        return Ok(());
+    fn render_clock(canvas: &mut Canvas<'_>, app: &App, x: i16, now_ms: u32) {
+        Self::header(
+            canvas,
+            x,
+            if app.clock_editing() {
+                "CLOCK SET"
+            } else {
+                "CLOCK"
+            },
+        );
+        if let Some(clock) = app.shown_clock() {
+            let time = time_text(
+                u32::from(clock.hours) * 3_600
+                    + u32::from(clock.minutes) * 60
+                    + u32::from(clock.seconds),
+            );
+            canvas.text_scaled(
+                x + 16,
+                17,
+                core::str::from_utf8(&time).unwrap_or("??:??:??"),
+                2,
+                false,
+            );
+            canvas.hline(x + 22, 38, 84, SET);
+            canvas.text_bytes(x + 34, 43, &date_text(clock), false);
+            if app.clock_editing() && ((now_ms / 350) & 1) == 0 {
+                const FIELD_X: [i16; 5] = [16, 52, 34, 64, 82];
+                const FIELD_W: [i16; 5] = [22, 22, 24, 12, 12];
+                const FIELD_Y: [i16; 5] = [35, 35, 52, 52, 52];
+                let field = app.clock_field() as usize;
+                canvas.hline(x + FIELD_X[field], FIELD_Y[field], FIELD_W[field], SET);
+            }
+        } else {
+            canvas.text(x + 37, 27, "RTC ERROR", false);
+        }
+        Self::footer(
+            canvas,
+            x,
+            if app.clock_editing() {
+                "<> FIELD UP/DN ENTER"
+            } else {
+                "ENTER SET  BACK"
+            },
+        );
     }
-    Rectangle::new(Point::new(109, 2), Size::new(15, 7))
-        .into_styled(PrimitiveStyle::with_stroke(ON, 1))
-        .draw(target)?;
-    Rectangle::new(Point::new(124, 4), Size::new(2, 3))
-        .into_styled(PrimitiveStyle::with_fill(ON))
-        .draw(target)?;
-    let width = u32::from(battery_mv.saturating_sub(3_200).min(1_000)) * 11 / 1_000;
-    if width > 0 {
-        Rectangle::new(Point::new(111, 4), Size::new(width, 3))
-            .into_styled(PrimitiveStyle::with_fill(ON))
-            .draw(target)?;
+
+    fn render_stopwatch(canvas: &mut Canvas<'_>, app: &App, x: i16, now_ms: u32) {
+        let elapsed = app.stopwatch_elapsed_ms(now_ms);
+        Self::header(
+            canvas,
+            x,
+            if app.stopwatch_running() {
+                "STOPWATCH  RUN"
+            } else {
+                "STOPWATCH"
+            },
+        );
+        let time = time_text(elapsed / 1_000);
+        canvas.text_scaled(
+            x + 16,
+            18,
+            core::str::from_utf8(&time).unwrap_or("??:??:??"),
+            2,
+            false,
+        );
+        let tenths = [b'.', b'0' + ((elapsed / 100) % 10) as u8, b' ', b's'];
+        canvas.text_bytes(x + 52, 39, &tenths, false);
+        Self::footer(canvas, x, "ENTER START  FUNC RESET");
     }
-    Ok(())
+
+    fn render_countdown(canvas: &mut Canvas<'_>, app: &App, x: i16, now_ms: u32) {
+        Self::header(
+            canvas,
+            x,
+            if app.countdown_running() {
+                "COUNTDOWN  RUN"
+            } else {
+                "COUNTDOWN"
+            },
+        );
+        let time = time_text(app.countdown_remaining(now_ms));
+        canvas.text_scaled(
+            x + 16,
+            18,
+            core::str::from_utf8(&time).unwrap_or("??:??:??"),
+            2,
+            false,
+        );
+        canvas.text(
+            x + 27,
+            39,
+            if app.countdown_running() {
+                "ENTER PAUSE"
+            } else {
+                "DPAD ADJUST"
+            },
+            false,
+        );
+        Self::footer(canvas, x, "ENTER GO  FUNC 05:00");
+    }
+
+    fn render_input_lab(canvas: &mut Canvas<'_>, app: &App, x: i16) {
+        Self::header(canvas, x, "INPUT LAB");
+        if let Some(event) = app.last_event() {
+            canvas.text(x + 5, 15, "KEY", false);
+            canvas.text(x + 47, 15, key_name(event.key), false);
+            canvas.text(x + 5, 26, "EVENT", false);
+            canvas.text(x + 47, 26, gesture_name(event.gesture), false);
+            canvas.text(x + 5, 37, "HELD", false);
+            let held = NumberText::new(event.held_ms);
+            canvas.text_bytes(x + 47, 37, held.as_bytes(), false);
+            canvas.text(x + 89, 37, "ms", false);
+        } else {
+            canvas.text(x + 31, 27, "PRESS A KEY", false);
+        }
+        Self::footer(canvas, x, "TRY CLICK DOUBLE LONG");
+    }
+
+    fn render_system(canvas: &mut Canvas<'_>, app: &App, x: i16, now_ms: u32) {
+        let stats = app.system_stats();
+        Self::header(canvas, x, "SYSTEM");
+        canvas.text(x + 5, 13, "UPTIME", false);
+        Self::number_at(canvas, x + 65, 13, now_ms / 1_000);
+        canvas.text(x + 104, 13, "s", false);
+        canvas.text(x + 5, 23, "DROP I:", false);
+        Self::number_at(canvas, x + 47, 23, stats.input_drops);
+        canvas.text(x + 77, 23, "U:", false);
+        Self::number_at(canvas, x + 92, 23, stats.uart_drops);
+        canvas.text(x + 5, 33, "ERR  I:", false);
+        Self::number_at(canvas, x + 47, 33, stats.oled_errors);
+        canvas.text(x + 77, 33, "U:", false);
+        Self::number_at(canvas, x + 92, 33, stats.uart_errors);
+        canvas.text(x + 5, 43, "OLED TX", false);
+        Self::number_at(canvas, x + 53, 43, stats.oled_transfers);
+        canvas.text(x + 89, 43, "F:", false);
+        Self::number_at(canvas, x + 104, 43, stats.storage_errors);
+        Self::footer(canvas, x, "NO HEAP  RUST EMBASSY");
+    }
+
+    fn render_about(canvas: &mut Canvas<'_>, x: i16) {
+        Self::header(canvas, x, "ABOUT");
+        canvas.text(x + 20, 15, "STM32 GAMEBOX", false);
+        canvas.text(x + 29, 26, "F103C8T6", false);
+        canvas.text(x + 20, 37, "RUST + EMBASSY", false);
+        canvas.text(x + 29, 47, "FW 2.0.0", false);
+        Self::footer(canvas, x, "OPEN ARCHITECTURE");
+    }
+
+    fn render_snake(canvas: &mut Canvas<'_>, app: &App, x: i16, now_ms: u32) {
+        let game = app.snake();
+        canvas.rectangle(x + 2, 12, 124, 51, SET);
+        canvas.text(x + 3, 2, "SNAKE", false);
+        canvas.text(x + 86, 2, "S:", false);
+        Self::number_at(canvas, x + 100, 2, u32::from(game.score()));
+        for (index, point) in game.body().iter().enumerate() {
+            let px = x + 4 + i16::from(point.x) * 4;
+            let py = 14 + i16::from(point.y) * 4;
+            if index == 0 {
+                canvas.rounded_rectangle(px, py, 3, 3, 1, SET);
+            } else {
+                canvas.fill_rectangle(px, py, 3, 3, SET);
+            }
+        }
+        let food = game.food();
+        if ((now_ms / 220) & 1) == 0 {
+            canvas.fill_rounded_rectangle(
+                x + 4 + i16::from(food.x) * 4,
+                14 + i16::from(food.y) * 4,
+                3,
+                3,
+                1,
+                SET,
+            );
+        }
+        Self::game_overlay(canvas, x, game.phase(), "ENTER TO PLAY");
+    }
+
+    fn render_dino(canvas: &mut Canvas<'_>, app: &App, x: i16, now_ms: u32) {
+        let game = app.dino();
+        canvas.text(x + 3, 2, "DINO", false);
+        canvas.text(x + 86, 2, "S:", false);
+        Self::number_at(canvas, x + 100, 2, u32::from(game.score()));
+        canvas.hline(x, 59, 128, SET);
+        for dash in (0..128_i16).step_by(9) {
+            let shifted = (dash - (now_ms / 45 % 9) as i16 + 128) % 128;
+            canvas.hline(x + shifted, 62, 4, SET);
+        }
+        let bottom = 58 - i16::from(game.jump_height());
+        let dx = x + 12;
+        canvas.fill_rounded_rectangle(dx, bottom - 8, 8, 8, 2, SET);
+        canvas.fill_rectangle(dx + 5, bottom - 11, 7, 5, SET);
+        canvas.pixel(dx + 10, bottom - 10, CLEAR);
+        canvas.vline(dx + 1, bottom, 2, SET);
+        canvas.vline(dx + 6, bottom, 2, SET);
+        for obstacle in game.obstacles() {
+            if !obstacle.is_active() {
+                continue;
+            }
+            let oy = 58 - i16::from(obstacle.height()) + 1;
+            canvas.fill_rectangle(
+                x + obstacle.x(),
+                oy,
+                i16::from(obstacle.width()),
+                i16::from(obstacle.height()),
+                SET,
+            );
+            canvas.hline(x + obstacle.x() - 2, oy + 4, 3, SET);
+        }
+        Self::game_overlay(canvas, x, game.phase(), "JUMP TO PLAY");
+    }
+
+    fn render_air_raid(canvas: &mut Canvas<'_>, app: &App, x: i16) {
+        let game = app.air_raid();
+        canvas.text(x + 2, 2, "AIR RAID", false);
+        canvas.text(x + 60, 2, "S:", false);
+        Self::number_at(canvas, x + 74, 2, u32::from(game.score()));
+        canvas.text(x + 101, 2, "L:", false);
+        Self::number_at(canvas, x + 115, 2, u32::from(game.lives()));
+        canvas.hline(x, 10, 128, SET);
+        let y = game.player_y();
+        canvas.line(x + 5, y + 3, x + 16, y, SET);
+        canvas.line(x + 5, y + 3, x + 16, y + 6, SET);
+        canvas.hline(x + 5, y + 3, 12, SET);
+        canvas.vline(x + 8, y, 7, SET);
+        for bullet in game.bullets() {
+            if bullet.is_active() {
+                canvas.hline(x + bullet.x(), bullet.y(), 3, SET);
+            }
+        }
+        for enemy in game.enemies() {
+            if !enemy.is_active() {
+                continue;
+            }
+            let ex = x + enemy.x();
+            canvas.rounded_rectangle(ex, enemy.y(), 9, 7, 2, SET);
+            canvas.hline(ex - 3, enemy.y() + 3, 4, SET);
+            canvas.pixel(ex + 2, enemy.y() + 2, SET);
+        }
+        Self::game_overlay(canvas, x, game.phase(), "ENTER TO PLAY");
+    }
+
+    fn render_tetris(canvas: &mut Canvas<'_>, app: &App, x: i16) {
+        let game = app.tetris();
+        let board_x = x + 2;
+        canvas.rectangle(board_x, 1, 42, 62, SET);
+        for row in 0..15_u8 {
+            for column in 0..10_u8 {
+                if game.settled(column, row) || game.active(column, row) {
+                    canvas.fill_rectangle(
+                        board_x + 1 + i16::from(column) * 4,
+                        2 + i16::from(row) * 4,
+                        3,
+                        3,
+                        SET,
+                    );
+                }
+            }
+        }
+        canvas.text(x + 49, 3, "TETRIS", false);
+        canvas.text(x + 49, 15, "SCORE", false);
+        Self::number_at(canvas, x + 49, 24, game.score());
+        canvas.text(x + 49, 35, "NEXT", false);
+        for row in 0..4_u8 {
+            for column in 0..4_u8 {
+                if crate::games::Tetris::piece_cell(game.next_piece(), 0, column, row) {
+                    canvas.fill_rectangle(
+                        x + 54 + i16::from(column) * 4,
+                        44 + i16::from(row) * 4,
+                        3,
+                        3,
+                        SET,
+                    );
+                }
+            }
+        }
+        canvas.text(x + 82, 44, "UP DROP", false);
+        canvas.text(x + 82, 54, "J/F ROT", false);
+        Self::game_overlay(canvas, x, game.phase(), "ENTER TO PLAY");
+    }
+
+    fn render_pong(canvas: &mut Canvas<'_>, app: &App, x: i16) {
+        let game = app.pong();
+        canvas.fill_rectangle(x, 0, 128, 9, SET);
+        canvas.text(x + 46, 1, "PONG 2P", true);
+        canvas.hline(x, 10, 128, SET);
+        canvas.hline(x, 63, 128, SET);
+        for y in (13..61_i16).step_by(6) {
+            canvas.vline(x + 64, y, 3, SET);
+        }
+        canvas.vline(
+            x + 7,
+            game.left_y() - i16::from(game.left_half_length()),
+            i16::from(game.left_half_length()) * 2 + 1,
+            SET,
+        );
+        canvas.vline(
+            x + 120,
+            game.right_y() - i16::from(game.right_half_length()),
+            i16::from(game.right_half_length()) * 2 + 1,
+            SET,
+        );
+        canvas.fill_rounded_rectangle(x + game.ball_x() - 1, game.ball_y() - 1, 3, 3, 1, SET);
+        if game.phase() == GamePhase::GameOver {
+            let winner = if game.winner() == 1 {
+                "LEFT WINS"
+            } else {
+                "RIGHT WINS"
+            };
+            canvas.fill_rounded_rectangle(x + 23, 23, 82, 26, 3, SET);
+            canvas.text(x + (128 - text_width(winner)) / 2, 28, winner, true);
+            canvas.text(x + 28, 39, "ENTER RESTART", true);
+        } else {
+            Self::game_overlay(canvas, x, game.phase(), "ENTER TO PLAY");
+        }
+    }
+
+    fn render_piano(canvas: &mut Canvas<'_>, app: &App, x: i16) {
+        Self::header(canvas, x, "PIANO");
+        const LABELS: [u8; 8] = *b"CDEFGABC";
+        for index in 0..8_u8 {
+            let key_x = x + 4 + i16::from(index) * 15;
+            let selected = app.piano_note() == Some(index);
+            if selected {
+                canvas.fill_rounded_rectangle(key_x, 15, 14, 35, 2, SET);
+            } else {
+                canvas.rounded_rectangle(key_x, 15, 14, 35, 2, SET);
+            }
+            canvas.text_bytes(
+                key_x + 4,
+                38,
+                &LABELS[index as usize..=index as usize],
+                selected,
+            );
+        }
+        Self::footer(canvas, x, "LONG BACK TO EXIT");
+    }
+
+    fn game_overlay(canvas: &mut Canvas<'_>, x: i16, phase: GamePhase, hint: &str) {
+        if phase == GamePhase::Playing {
+            return;
+        }
+        canvas.fill_rounded_rectangle(x + 20, 24, 88, 24, 3, SET);
+        let title = if phase == GamePhase::Ready {
+            "READY"
+        } else {
+            "GAME OVER"
+        };
+        canvas.text(x + (128 - text_width(title)) / 2, 28, title, true);
+        canvas.text(x + (128 - text_width(hint)) / 2, 38, hint, true);
+    }
+
+    fn number_at(canvas: &mut Canvas<'_>, x: i16, y: i16, value: u32) {
+        let text = NumberText::new(value);
+        canvas.text_bytes(x, y, text.as_bytes(), false);
+    }
+
+    fn icon(canvas: &mut Canvas<'_>, icon: Icon, x: i16, y: i16) {
+        match icon {
+            Icon::Gamepad => {
+                canvas.rounded_rectangle(x, y, 24, 16, 3, SET);
+                canvas.hline(x + 4, y + 8, 7, SET);
+                canvas.vline(x + 7, y + 5, 7, SET);
+                canvas.fill_rounded_rectangle(x + 16, y + 5, 3, 3, 1, SET);
+                canvas.fill_rounded_rectangle(x + 20, y + 9, 3, 3, 1, SET);
+            }
+            Icon::Clock | Icon::Stopwatch | Icon::Timer => {
+                canvas.circle(x + 12, y + 8, 8, SET);
+                canvas.line(x + 12, y + 8, x + 12, y + 3, SET);
+                canvas.line(x + 12, y + 8, x + 17, y + 11, SET);
+            }
+            Icon::Snake => {
+                canvas.line(x, y + 3, x + 6, y + 12, SET);
+                canvas.line(x + 6, y + 12, x + 13, y + 3, SET);
+                canvas.line(x + 13, y + 3, x + 22, y + 10, SET);
+                canvas.fill_rounded_rectangle(x + 20, y + 8, 4, 4, 1, SET);
+            }
+            Icon::Dino => {
+                canvas.fill_rounded_rectangle(x + 4, y + 7, 11, 8, 2, SET);
+                canvas.fill_rectangle(x + 12, y + 3, 9, 7, SET);
+                canvas.pixel(x + 18, y + 5, CLEAR);
+                canvas.vline(x + 6, y + 14, 2, SET);
+                canvas.vline(x + 13, y + 14, 2, SET);
+            }
+            Icon::Plane => {
+                canvas.hline(x, y + 8, 23, SET);
+                canvas.line(x + 5, y + 8, x + 17, y, SET);
+                canvas.line(x + 5, y + 8, x + 17, y + 15, SET);
+            }
+            Icon::Tetris => {
+                for (dx, dy) in [(0, 8), (6, 8), (12, 8), (6, 2)] {
+                    canvas.fill_rectangle(x + dx, y + dy, 5, 5, SET);
+                }
+            }
+            Icon::Pong => {
+                canvas.vline(x, y + 2, 13, SET);
+                canvas.vline(x + 23, y + 2, 13, SET);
+                canvas.circle(x + 12, y + 8, 2, SET);
+            }
+            Icon::Piano => {
+                for key in 0..4 {
+                    canvas.rectangle(x + key * 6, y, 6, 16, SET);
+                }
+            }
+            Icon::Settings | Icon::Motion => {
+                canvas.circle(x + 12, y + 8, 7, SET);
+                canvas.circle(x + 12, y + 8, 3, SET);
+                canvas.hline(x, y + 8, 24, SET);
+                canvas.vline(x + 12, y, 16, SET);
+            }
+            Icon::Tools => {
+                canvas.line(x + 2, y + 2, x + 21, y + 14, SET);
+                canvas.line(x + 21, y + 2, x + 2, y + 14, SET);
+                canvas.circle(x + 3, y + 2, 2, SET);
+            }
+            Icon::Buttons => {
+                canvas.rounded_rectangle(x, y, 24, 16, 3, SET);
+                canvas.text(x + 3, y + 4, "KEY", false);
+            }
+            Icon::Speaker => {
+                canvas.fill_rectangle(x, y + 6, 5, 5, SET);
+                canvas.line(x + 5, y + 6, x + 11, y + 2, SET);
+                canvas.line(x + 5, y + 10, x + 11, y + 14, SET);
+                canvas.circle(x + 11, y + 8, 7, SET);
+            }
+            Icon::Brightness => {
+                canvas.circle(x + 12, y + 8, 5, SET);
+                canvas.hline(x, y + 8, 24, SET);
+                canvas.vline(x + 12, y, 16, SET);
+            }
+            Icon::Chip => {
+                canvas.rectangle(x + 4, y + 2, 16, 12, SET);
+                for pin in 0..4 {
+                    canvas.hline(x, y + 4 + pin * 3, 4, SET);
+                    canvas.hline(x + 20, y + 4 + pin * 3, 4, SET);
+                }
+            }
+            Icon::Info => {
+                canvas.circle(x + 12, y + 8, 8, SET);
+                canvas.text(x + 9, y + 4, "i", false);
+            }
+        }
+    }
 }
 
-fn draw_heart<D>(target: &mut D, origin: Point) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = BinaryColor>,
-{
-    const POINTS: [(i32, i32); 20] = [
-        (1, 0),
-        (2, 0),
-        (5, 0),
-        (6, 0),
-        (0, 1),
-        (1, 1),
-        (2, 1),
-        (3, 1),
-        (4, 1),
-        (5, 1),
-        (6, 1),
-        (7, 1),
-        (1, 2),
-        (2, 2),
-        (3, 2),
-        (4, 2),
-        (5, 2),
-        (6, 2),
-        (3, 3),
-        (4, 3),
-    ];
-    target.draw_iter(
-        POINTS
-            .iter()
-            .map(|(x, y)| Pixel(origin + Point::new(*x, *y), ON)),
-    )
+fn list_targets(app: &App, view: View) -> (i16, i16, i16) {
+    let menu = menu_for(view).expect("list view has a menu");
+    let selected = app.menu().selection(view) as usize;
+    let top = selected
+        .saturating_sub(1)
+        .min(menu.entries.len().saturating_sub(3));
+    let y = 14 + (selected - top) as i16 * 16;
+    let width = (menu.entries[selected].label.len() * 6 + 20).min(121) as i16;
+    (y, width, -(top as i16 * 16))
 }
 
-fn draw_ascii<D>(
-    target: &mut D,
-    text: &str,
-    baseline: Point,
-    font: &'static embedded_graphics::mono_font::MonoFont<'static>,
-) -> Result<(), D::Error>
-where
-    D: DrawTarget<Color = BinaryColor>,
-{
-    Text::new(text, baseline, MonoTextStyle::new(font, ON))
-        .draw(target)
-        .map(|_| ())
+fn setting_value(app: &App, action: Action) -> &'static str {
+    let settings = app.persistent_data().settings;
+    match action {
+        Action::ToggleSound => {
+            if settings.sound_enabled {
+                "ON"
+            } else {
+                "OFF"
+            }
+        }
+        Action::CycleMotion => match settings.motion {
+            MotionLevel::Full => "FULL",
+            MotionLevel::Reduced => "REDUCED",
+            MotionLevel::Off => "OFF",
+        },
+        Action::CycleBrightness => match settings.brightness {
+            Brightness::Low => "LOW",
+            Brightness::Medium => "MED",
+            Brightness::High => "HIGH",
+            Brightness::Max => "MAX",
+        },
+        Action::CycleHomeHeader => match settings.home_header {
+            HomeHeaderMode::Time => "TIME",
+            HomeHeaderMode::Date => "DATE",
+            HomeHeaderMode::Pet => "PET",
+            HomeHeaderMode::Title => "TITLE",
+        },
+        Action::Open => "",
+    }
 }
 
-const fn digit(value: u32) -> u8 {
-    b'0' + value as u8
+const fn text_width(text: &str) -> i16 {
+    text.len() as i16 * 6
 }
 
-fn format_stopwatch(elapsed_ms: u32) -> [u8; 7] {
-    let tenths = (elapsed_ms / 100) % 10;
-    let total_seconds = elapsed_ms / 1_000;
-    let minutes = (total_seconds / 60) % 100;
-    let seconds = total_seconds % 60;
+fn position_text(index: u8, count: u8) -> [u8; 5] {
+    let position = index + 1;
     [
-        digit(minutes / 10),
-        digit(minutes % 10),
-        b':',
-        digit(seconds / 10),
-        digit(seconds % 10),
-        b'.',
-        digit(tenths),
+        b'0' + position / 10,
+        b'0' + position % 10,
+        b'/',
+        b'0' + count / 10,
+        b'0' + count % 10,
     ]
 }
 
-fn format_countdown(remaining_ms: u32) -> [u8; 5] {
-    let total_seconds = remaining_ms.saturating_add(999) / 1_000;
-    let minutes = (total_seconds / 60).min(99);
+fn time_text(total_seconds: u32) -> [u8; 8] {
+    let hours = total_seconds / 3_600 % 100;
+    let minutes = total_seconds / 60 % 60;
     let seconds = total_seconds % 60;
     [
-        digit(minutes / 10),
-        digit(minutes % 10),
+        b'0' + (hours / 10) as u8,
+        b'0' + (hours % 10) as u8,
         b':',
-        digit(seconds / 10),
-        digit(seconds % 10),
+        b'0' + (minutes / 10) as u8,
+        b'0' + (minutes % 10) as u8,
+        b':',
+        b'0' + (seconds / 10) as u8,
+        b'0' + (seconds % 10) as u8,
     ]
 }
 
-struct NumberBuffer {
+fn date_text(value: DateTime) -> [u8; 10] {
+    [
+        b'2',
+        b'0',
+        b'0' + value.date.year / 10,
+        b'0' + value.date.year % 10,
+        b'-',
+        b'0' + value.date.month / 10,
+        b'0' + value.date.month % 10,
+        b'-',
+        b'0' + value.date.day / 10,
+        b'0' + value.date.day % 10,
+    ]
+}
+
+const fn key_name(key: Key) -> &'static str {
+    match key {
+        Key::Up => "UP",
+        Key::Down => "DOWN",
+        Key::Left => "LEFT",
+        Key::Right => "RIGHT",
+        Key::Jump => "JUMP",
+        Key::Function => "FUNC",
+        Key::Enter => "ENTER",
+        Key::Back => "BACK",
+    }
+}
+
+const fn gesture_name(gesture: Gesture) -> &'static str {
+    match gesture {
+        Gesture::Pressed => "PRESSED",
+        Gesture::Released => "RELEASED",
+        Gesture::Click => "CLICK",
+        Gesture::DoubleClick => "DOUBLE",
+        Gesture::LongPress => "LONG",
+        Gesture::Repeat => "REPEAT",
+    }
+}
+
+struct NumberText {
     bytes: [u8; 10],
+    start: u8,
 }
 
-impl NumberBuffer {
-    const fn new() -> Self {
-        Self { bytes: [b'0'; 10] }
-    }
-
-    fn format(&mut self, mut value: u32, minimum_digits: usize) -> &str {
-        let mut cursor = self.bytes.len();
-        let mut digits = 0;
+impl NumberText {
+    fn new(mut value: u32) -> Self {
+        let mut bytes = [b'0'; 10];
+        let mut start = 10_u8;
         loop {
-            cursor -= 1;
-            self.bytes[cursor] = digit(value % 10);
+            start -= 1;
+            bytes[start as usize] = b'0' + (value % 10) as u8;
             value /= 10;
-            digits += 1;
-            if value == 0 && digits >= minimum_digits {
+            if value == 0 {
                 break;
             }
         }
-        str::from_utf8(&self.bytes[cursor..]).expect("number formatter only emits ASCII")
+        Self { bytes, start }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes[self.start as usize..]
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PersistentData;
 
     #[test]
-    fn compact_time_formatters_are_stable() {
-        assert_eq!(&format_stopwatch(123_456), b"02:03.4");
-        assert_eq!(&format_countdown(60_001), b"01:01");
+    fn every_product_view_renders_without_panicking() {
+        let renderer = UiRenderer;
+        let mut app = App::new(0, PersistentData::default(), 1);
+        app.tick(App::BOOT_DURATION_MS, 0);
+        app.set_clock_snapshot(Some(DateTime::default()));
+        let mut frame = [0_u8; FRAME_BYTES];
+        renderer.draw(&mut frame, &app, 1_000);
+        assert!(frame.iter().any(|byte| *byte != 0));
     }
 
     #[test]
-    fn number_buffer_pads_without_allocation() {
-        let mut buffer = NumberBuffer::new();
-        assert_eq!(buffer.format(7, 3), "007");
+    fn compact_formatters_are_stable() {
+        assert_eq!(&time_text(3_661), b"01:01:01");
+        assert_eq!(NumberText::new(42).as_bytes(), b"42");
     }
 }

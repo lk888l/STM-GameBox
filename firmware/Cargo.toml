@@ -27,8 +27,7 @@ embassy-futures.workspace = true
 embassy-stm32.workspace = true
 embassy-sync.workspace = true
 embassy-time.workspace = true
-embedded-graphics.workspace = true
 gamebox-core.workspace = true
-oled-driver = { path = "../../example_oled/crates/oled-driver", default-features = false, features = ["async", "graphics"] }
+oled-driver = { workspace = true, features = ["async"] }
 panic-probe.workspace = true
 static_cell.workspace = true

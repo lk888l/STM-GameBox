@@ -1,414 +1,369 @@
-//! Table-driven hierarchical menu state machine.
+//! Static product information architecture and bounded menu selection state.
 
-use crate::{
-    button::{Gesture, Key, KeyEvent},
-    settings::Settings,
-};
-
-/// Menu pages with stable indices for per-page selection memory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Every renderable product view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
-pub enum PageId {
-    /// Top-level product navigation.
+pub enum View {
+    /// Four-card product home.
+    #[default]
     Home = 0,
-    /// Playable games.
+    /// Six-game list.
     Games = 1,
-    /// Time-based utility applications.
+    /// Utility list.
     Tools = 2,
-    /// Persistent user settings.
-    Settings = 3,
+    /// RTC dashboard and editor.
+    Clock = 3,
+    /// User settings list.
+    Settings = 4,
+    /// Snake game.
+    Snake = 5,
+    /// Dinosaur runner.
+    Dino = 6,
+    /// Side-scrolling shooter.
+    AirRaid = 7,
+    /// Falling-block puzzle.
+    Tetris = 8,
+    /// Two-player Pong.
+    Pong = 9,
+    /// Eight-key piano.
+    Piano = 10,
+    /// Stopwatch utility.
+    Stopwatch = 11,
+    /// Countdown utility.
+    Countdown = 12,
+    /// Live button-event inspector.
+    InputLab = 13,
+    /// Runtime health page.
+    System = 14,
+    /// Product information page.
+    About = 15,
 }
 
-impl PageId {
-    const COUNT: usize = 4;
+impl View {
+    /// Number of concrete views.
+    pub const COUNT: usize = 16;
 
-    const fn index(self) -> usize {
+    /// Stable array index.
+    #[must_use]
+    pub const fn index(self) -> usize {
         self as usize
     }
 }
 
-/// Applications that can take ownership of the main content area.
+/// Small procedural icon identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApplicationId {
-    /// Grid-based snake game.
+pub enum Icon {
+    /// Game controller.
+    Gamepad,
+    /// Crossed tools.
+    Tools,
+    /// Clock face.
+    Clock,
+    /// Settings gear.
+    Settings,
+    /// Snake line.
     Snake,
-    /// Stopwatch utility.
+    /// Pixel dinosaur.
+    Dino,
+    /// Aircraft.
+    Plane,
+    /// Tetromino.
+    Tetris,
+    /// Pong court.
+    Pong,
+    /// Piano keys.
+    Piano,
+    /// Stopwatch.
     Stopwatch,
-    /// Countdown utility.
-    Countdown,
+    /// Countdown timer.
+    Timer,
+    /// Button tester.
+    Buttons,
+    /// MCU/system chip.
+    Chip,
+    /// Information mark.
+    Info,
+    /// Speaker.
+    Speaker,
+    /// Animation/motion.
+    Motion,
+    /// Display brightness.
+    Brightness,
 }
 
-/// A menu entry's behavior, separate from its presentation label.
+/// Behavior of one menu entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MenuAction {
-    /// Navigate into a child page.
-    Open(PageId),
-    /// Navigate to the parent page.
-    Back,
-    /// Launch an application.
-    Launch(ApplicationId),
-    /// Enter low-update standby mode.
-    Standby,
-    /// Modify one persistent setting.
-    Adjust(SettingId),
+pub enum Action {
+    /// Open the target view.
+    Open,
+    /// Toggle sound feedback.
+    ToggleSound,
+    /// Cycle the motion level.
+    CycleMotion,
+    /// Cycle OLED brightness.
+    CycleBrightness,
+    /// Cycle home-header content.
+    CycleHomeHeader,
 }
 
-/// Persistent settings addressable from the menu.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettingId {
-    /// Sound on/off.
-    Sound,
-    /// Motion preset.
-    Animation,
-    /// Selected-row visual style.
-    Cursor,
-    /// Standby refresh period.
-    StandbyRefresh,
-}
-
-/// Immutable presentation and command descriptor.
+/// Immutable menu entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuEntry {
-    /// Chinese display label.
+    /// Uppercase display label.
     pub label: &'static str,
-    /// Command produced by activation.
-    pub action: MenuAction,
+    /// Short explanatory subtitle.
+    pub subtitle: &'static str,
+    /// Procedural icon identity.
+    pub icon: Icon,
+    /// Activation behavior.
+    pub action: Action,
+    /// Destination for [`Action::Open`].
+    pub target: View,
+}
+
+/// Immutable menu-page descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuDefinition {
+    /// Compact title rail text.
+    pub title: &'static str,
+    /// Ordered menu entries.
+    pub entries: &'static [MenuEntry],
 }
 
 const HOME_ENTRIES: [MenuEntry; 4] = [
     MenuEntry {
-        label: "游戏",
-        action: MenuAction::Open(PageId::Games),
+        label: "GAMES",
+        subtitle: "6 classics",
+        icon: Icon::Gamepad,
+        action: Action::Open,
+        target: View::Games,
     },
     MenuEntry {
-        label: "工具",
-        action: MenuAction::Open(PageId::Tools),
+        label: "TOOLS",
+        subtitle: "Time & test",
+        icon: Icon::Tools,
+        action: Action::Open,
+        target: View::Tools,
     },
     MenuEntry {
-        label: "设置",
-        action: MenuAction::Open(PageId::Settings),
+        label: "CLOCK",
+        subtitle: "RTC dashboard",
+        icon: Icon::Clock,
+        action: Action::Open,
+        target: View::Clock,
     },
     MenuEntry {
-        label: "关机",
-        action: MenuAction::Standby,
+        label: "SETTINGS",
+        subtitle: "Tune the box",
+        icon: Icon::Settings,
+        action: Action::Open,
+        target: View::Settings,
     },
 ];
 
-const GAME_ENTRIES: [MenuEntry; 2] = [
+const GAME_ENTRIES: [MenuEntry; 6] = [
     MenuEntry {
-        label: "返回",
-        action: MenuAction::Back,
+        label: "DINO",
+        subtitle: "Jump & survive",
+        icon: Icon::Dino,
+        action: Action::Open,
+        target: View::Dino,
     },
     MenuEntry {
-        label: "贪吃蛇",
-        action: MenuAction::Launch(ApplicationId::Snake),
+        label: "SNAKE",
+        subtitle: "Eat and grow",
+        icon: Icon::Snake,
+        action: Action::Open,
+        target: View::Snake,
+    },
+    MenuEntry {
+        label: "AIR RAID",
+        subtitle: "Dodge and fire",
+        icon: Icon::Plane,
+        action: Action::Open,
+        target: View::AirRaid,
+    },
+    MenuEntry {
+        label: "TETRIS",
+        subtitle: "Clear the lines",
+        icon: Icon::Tetris,
+        action: Action::Open,
+        target: View::Tetris,
+    },
+    MenuEntry {
+        label: "PONG 2P",
+        subtitle: "Two players",
+        icon: Icon::Pong,
+        action: Action::Open,
+        target: View::Pong,
+    },
+    MenuEntry {
+        label: "PIANO",
+        subtitle: "Eight-key synth",
+        icon: Icon::Piano,
+        action: Action::Open,
+        target: View::Piano,
     },
 ];
 
-const TOOL_ENTRIES: [MenuEntry; 3] = [
+const TOOL_ENTRIES: [MenuEntry; 4] = [
     MenuEntry {
-        label: "返回",
-        action: MenuAction::Back,
+        label: "STOPWATCH",
+        subtitle: "Monotonic timer",
+        icon: Icon::Stopwatch,
+        action: Action::Open,
+        target: View::Stopwatch,
     },
     MenuEntry {
-        label: "秒表",
-        action: MenuAction::Launch(ApplicationId::Stopwatch),
+        label: "COUNTDOWN",
+        subtitle: "Adjustable timer",
+        icon: Icon::Timer,
+        action: Action::Open,
+        target: View::Countdown,
     },
     MenuEntry {
-        label: "倒计时",
-        action: MenuAction::Launch(ApplicationId::Countdown),
+        label: "INPUT LAB",
+        subtitle: "Button events",
+        icon: Icon::Buttons,
+        action: Action::Open,
+        target: View::InputLab,
+    },
+    MenuEntry {
+        label: "SYSTEM",
+        subtitle: "Runtime health",
+        icon: Icon::Chip,
+        action: Action::Open,
+        target: View::System,
     },
 ];
 
 const SETTING_ENTRIES: [MenuEntry; 5] = [
     MenuEntry {
-        label: "返回",
-        action: MenuAction::Back,
+        label: "SOUND",
+        subtitle: "Buzzer feedback",
+        icon: Icon::Speaker,
+        action: Action::ToggleSound,
+        target: View::Settings,
     },
     MenuEntry {
-        label: "静音",
-        action: MenuAction::Adjust(SettingId::Sound),
+        label: "MOTION",
+        subtitle: "Animation level",
+        icon: Icon::Motion,
+        action: Action::CycleMotion,
+        target: View::Settings,
     },
     MenuEntry {
-        label: "动画速度",
-        action: MenuAction::Adjust(SettingId::Animation),
+        label: "BRIGHTNESS",
+        subtitle: "OLED contrast",
+        icon: Icon::Brightness,
+        action: Action::CycleBrightness,
+        target: View::Settings,
     },
     MenuEntry {
-        label: "光标风格",
-        action: MenuAction::Adjust(SettingId::Cursor),
+        label: "HOME HEADER",
+        subtitle: "Time date pet title",
+        icon: Icon::Clock,
+        action: Action::CycleHomeHeader,
+        target: View::Settings,
     },
     MenuEntry {
-        label: "刷新时间",
-        action: MenuAction::Adjust(SettingId::StandbyRefresh),
+        label: "ABOUT",
+        subtitle: "Firmware details",
+        icon: Icon::Info,
+        action: Action::Open,
+        target: View::About,
     },
 ];
 
-/// View of a page's immutable content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MenuPage {
-    /// Short Chinese page title.
-    pub title: &'static str,
-    /// Ordered entries.
-    pub entries: &'static [MenuEntry],
-}
+const HOME: MenuDefinition = MenuDefinition {
+    title: "GAMEBOX",
+    entries: &HOME_ENTRIES,
+};
+const GAMES: MenuDefinition = MenuDefinition {
+    title: "GAMES",
+    entries: &GAME_ENTRIES,
+};
+const TOOLS: MenuDefinition = MenuDefinition {
+    title: "TOOLS",
+    entries: &TOOL_ENTRIES,
+};
+const SETTINGS: MenuDefinition = MenuDefinition {
+    title: "SETTINGS",
+    entries: &SETTING_ENTRIES,
+};
 
-/// Look up an immutable page descriptor.
+/// Look up a menu descriptor; non-menu views return `None`.
 #[must_use]
-pub const fn page(id: PageId) -> MenuPage {
-    match id {
-        PageId::Home => MenuPage {
-            title: "游戏机",
-            entries: &HOME_ENTRIES,
-        },
-        PageId::Games => MenuPage {
-            title: "游戏",
-            entries: &GAME_ENTRIES,
-        },
-        PageId::Tools => MenuPage {
-            title: "工具",
-            entries: &TOOL_ENTRIES,
-        },
-        PageId::Settings => MenuPage {
-            title: "设置",
-            entries: &SETTING_ENTRIES,
-        },
+pub const fn menu_for(view: View) -> Option<&'static MenuDefinition> {
+    match view {
+        View::Home => Some(&HOME),
+        View::Games => Some(&GAMES),
+        View::Tools => Some(&TOOLS),
+        View::Settings => Some(&SETTINGS),
+        _ => None,
     }
 }
 
-/// Direction used to seed an incoming-page transition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransitionDirection {
-    /// Child page enters from the right.
-    Forward,
-    /// Parent page enters from the left.
-    Backward,
+/// Whether a view is backed by a menu table.
+#[must_use]
+pub const fn is_menu(view: View) -> bool {
+    matches!(
+        view,
+        View::Home | View::Games | View::Tools | View::Settings
+    )
 }
 
-/// Side effect returned to the application shell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MenuEffect {
-    /// No shell-level work is needed.
-    None,
-    /// Launch a full-screen application.
-    Launch(ApplicationId),
-    /// Enter standby.
-    Standby,
-    /// Persist and apply a changed setting snapshot.
-    SettingsChanged(Settings),
+/// Whether a view is one of the six games.
+#[must_use]
+pub const fn is_game(view: View) -> bool {
+    matches!(
+        view,
+        View::Snake | View::Dino | View::AirRaid | View::Tetris | View::Pong | View::Piano
+    )
 }
 
-/// Hierarchical menu model with bounded history and no allocation.
+/// Per-page menu selection memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuModel {
-    page: PageId,
-    selected: [u8; PageId::COUNT],
-    history: [PageId; PageId::COUNT],
-    history_len: u8,
-    transition: Option<TransitionDirection>,
-    last_application: Option<ApplicationId>,
+    selections: [u8; View::COUNT],
 }
 
 impl Default for MenuModel {
     fn default() -> Self {
         Self {
-            page: PageId::Home,
-            selected: [0; PageId::COUNT],
-            history: [PageId::Home; PageId::COUNT],
-            history_len: 0,
-            transition: None,
-            last_application: None,
+            selections: [0; View::COUNT],
         }
     }
 }
 
 impl MenuModel {
-    /// Current page identifier.
+    /// Selected row for a menu view, or zero for a non-menu view.
     #[must_use]
-    pub const fn page_id(&self) -> PageId {
-        self.page
+    pub const fn selection(&self, view: View) -> u8 {
+        self.selections[view.index()]
     }
 
-    /// Current immutable page descriptor.
+    /// Selected entry for a menu view.
     #[must_use]
-    pub const fn current_page(&self) -> MenuPage {
-        page(self.page)
+    pub fn selected_entry(&self, view: View) -> Option<&'static MenuEntry> {
+        let menu = menu_for(view)?;
+        Some(&menu.entries[self.selection(view) as usize])
     }
 
-    /// Selected entry index.
-    #[must_use]
-    pub const fn selected_index(&self) -> usize {
-        self.selected[self.page.index()] as usize
-    }
-
-    /// Selected entry descriptor.
-    #[must_use]
-    pub fn selected_entry(&self) -> &'static MenuEntry {
-        &self.current_page().entries[self.selected_index()]
-    }
-
-    /// Most recently launched application, used by the quick-launch gesture.
-    #[must_use]
-    pub const fn last_application(&self) -> Option<ApplicationId> {
-        self.last_application
-    }
-
-    /// Record a successfully launched application.
-    pub const fn record_launch(&mut self, application: ApplicationId) {
-        self.last_application = Some(application);
-    }
-
-    /// Consume a pending page transition exactly once.
-    pub const fn take_transition(&mut self) -> Option<TransitionDirection> {
-        self.transition.take()
-    }
-
-    /// Return directly to the root page and clear navigation history.
-    pub fn go_home(&mut self) {
-        if self.page != PageId::Home {
-            self.page = PageId::Home;
-            self.history_len = 0;
-            self.transition = Some(TransitionDirection::Backward);
-        }
-    }
-
-    /// Process one input event.
-    ///
-    /// Directional keys respond on the debounced press transition for a crisp
-    /// feel. Confirm/back use exclusive click, double-click and long-press
-    /// gestures, so their commands cannot fire twice.
-    pub fn handle_event(&mut self, event: KeyEvent, settings: &mut Settings) -> MenuEffect {
-        match (event.key, event.gesture) {
-            (Key::Up, Gesture::Pressed | Gesture::Repeat) => {
-                self.move_selection(-1);
-                MenuEffect::None
-            }
-            (Key::Down, Gesture::Pressed | Gesture::Repeat) => {
-                self.move_selection(1);
-                MenuEffect::None
-            }
-            (Key::Left, Gesture::Pressed | Gesture::Repeat) => {
-                if let MenuAction::Adjust(setting) = self.selected_entry().action {
-                    adjust_setting(settings, setting, -1);
-                    MenuEffect::SettingsChanged(*settings)
-                } else {
-                    self.navigate_back();
-                    MenuEffect::None
-                }
-            }
-            (Key::Right, Gesture::Pressed | Gesture::Repeat) => {
-                if let MenuAction::Adjust(setting) = self.selected_entry().action {
-                    adjust_setting(settings, setting, 1);
-                    MenuEffect::SettingsChanged(*settings)
-                } else {
-                    self.activate(settings)
-                }
-            }
-            (Key::Enter, Gesture::Click) => self.activate(settings),
-            (Key::Enter | Key::Jump, Gesture::DoubleClick) => self
-                .last_application
-                .map_or(MenuEffect::None, MenuEffect::Launch),
-            (Key::Function, Gesture::Pressed) => {
-                self.open(PageId::Settings);
-                MenuEffect::None
-            }
-            (Key::Back, Gesture::Click) => {
-                if self.page == PageId::Home {
-                    MenuEffect::Standby
-                } else {
-                    self.navigate_back();
-                    MenuEffect::None
-                }
-            }
-            (Key::Back, Gesture::DoubleClick) => {
-                self.go_home();
-                MenuEffect::None
-            }
-            (Key::Back, Gesture::LongPress) => MenuEffect::Standby,
-            _ => MenuEffect::None,
-        }
-    }
-
-    fn move_selection(&mut self, direction: i8) {
-        let count = self.current_page().entries.len();
-        let current = self.selected_index();
-        let next = if direction < 0 {
-            current.checked_sub(1).unwrap_or(count - 1)
+    /// Move a selection with wraparound and return its previous value.
+    pub fn move_selection(&mut self, view: View, delta: i8) -> Option<u8> {
+        let menu = menu_for(view)?;
+        let index = view.index();
+        let old = self.selections[index];
+        let count = menu.entries.len() as u8;
+        self.selections[index] = if delta < 0 {
+            if old == 0 { count - 1 } else { old - 1 }
+        } else if old + 1 >= count {
+            0
         } else {
-            (current + 1) % count
+            old + 1
         };
-        self.selected[self.page.index()] = next as u8;
-    }
-
-    fn activate(&mut self, settings: &mut Settings) -> MenuEffect {
-        match self.selected_entry().action {
-            MenuAction::Open(page) => {
-                self.open(page);
-                MenuEffect::None
-            }
-            MenuAction::Back => {
-                self.navigate_back();
-                MenuEffect::None
-            }
-            MenuAction::Launch(application) => MenuEffect::Launch(application),
-            MenuAction::Standby => MenuEffect::Standby,
-            MenuAction::Adjust(setting) => {
-                adjust_setting(settings, setting, 1);
-                MenuEffect::SettingsChanged(*settings)
-            }
-        }
-    }
-
-    fn open(&mut self, target: PageId) {
-        if target == self.page {
-            return;
-        }
-        let index = usize::from(self.history_len);
-        if index < self.history.len() {
-            self.history[index] = self.page;
-            self.history_len += 1;
-        }
-        self.page = target;
-        self.transition = Some(TransitionDirection::Forward);
-    }
-
-    fn navigate_back(&mut self) {
-        if self.history_len == 0 {
-            self.go_home();
-            return;
-        }
-        self.history_len -= 1;
-        self.page = self.history[usize::from(self.history_len)];
-        self.transition = Some(TransitionDirection::Backward);
-    }
-}
-
-fn adjust_setting(settings: &mut Settings, setting: SettingId, direction: i8) {
-    match setting {
-        SettingId::Sound => settings.sound_enabled = !settings.sound_enabled,
-        SettingId::Animation => {
-            settings.animation_speed = if direction < 0 {
-                settings.animation_speed.previous()
-            } else {
-                settings.animation_speed.next()
-            };
-        }
-        SettingId::Cursor => {
-            settings.cursor_style = if direction < 0 {
-                settings.cursor_style.previous()
-            } else {
-                settings.cursor_style.next()
-            };
-        }
-        SettingId::StandbyRefresh => {
-            let delta = if direction < 0 { -2_i16 } else { 2_i16 };
-            settings.standby_refresh_seconds = settings
-                .standby_refresh_seconds
-                .saturating_add_signed(delta)
-                .clamp(
-                    Settings::MIN_STANDBY_REFRESH_SECONDS,
-                    Settings::MAX_STANDBY_REFRESH_SECONDS,
-                );
-        }
+        Some(old)
     }
 }
 
@@ -416,52 +371,19 @@ fn adjust_setting(settings: &mut Settings, setting: SettingId, direction: i8) {
 mod tests {
     use super::*;
 
-    fn event(key: Key, gesture: Gesture) -> KeyEvent {
-        KeyEvent::new(key, gesture, 100)
+    #[test]
+    fn all_six_games_are_real_targets() {
+        let games = menu_for(View::Games).unwrap();
+        assert_eq!(games.entries.len(), 6);
+        assert!(games.entries.iter().all(|entry| is_game(entry.target)));
     }
 
     #[test]
-    fn directional_press_wraps_without_waiting_for_click() {
+    fn selection_wraps_and_is_remembered_per_page() {
         let mut menu = MenuModel::default();
-        let mut settings = Settings::default();
-        menu.handle_event(event(Key::Up, Gesture::Pressed), &mut settings);
-        assert_eq!(menu.selected_index(), HOME_ENTRIES.len() - 1);
-        menu.handle_event(event(Key::Down, Gesture::Pressed), &mut settings);
-        assert_eq!(menu.selected_index(), 0);
-    }
-
-    #[test]
-    fn navigation_preserves_each_pages_selection() {
-        let mut menu = MenuModel::default();
-        let mut settings = Settings::default();
-        menu.handle_event(event(Key::Enter, Gesture::Click), &mut settings);
-        assert_eq!(menu.page_id(), PageId::Games);
-        menu.handle_event(event(Key::Down, Gesture::Pressed), &mut settings);
-        assert_eq!(menu.selected_index(), 1);
-        menu.handle_event(event(Key::Back, Gesture::Click), &mut settings);
-        assert_eq!(menu.page_id(), PageId::Home);
-        menu.handle_event(event(Key::Enter, Gesture::Click), &mut settings);
-        assert_eq!(menu.selected_index(), 1);
-    }
-
-    #[test]
-    fn settings_are_changed_by_value_not_global_state() {
-        let mut menu = MenuModel::default();
-        let mut settings = Settings::default();
-        menu.open(PageId::Settings);
-        menu.move_selection(1);
-        let effect = menu.handle_event(event(Key::Right, Gesture::Pressed), &mut settings);
-        assert!(!settings.sound_enabled);
-        assert_eq!(effect, MenuEffect::SettingsChanged(settings));
-    }
-
-    #[test]
-    fn double_back_returns_home_without_activating_standby() {
-        let mut menu = MenuModel::default();
-        let mut settings = Settings::default();
-        menu.open(PageId::Tools);
-        let effect = menu.handle_event(event(Key::Back, Gesture::DoubleClick), &mut settings);
-        assert_eq!(effect, MenuEffect::None);
-        assert_eq!(menu.page_id(), PageId::Home);
+        menu.move_selection(View::Home, -1);
+        menu.move_selection(View::Games, 1);
+        assert_eq!(menu.selection(View::Home), 3);
+        assert_eq!(menu.selection(View::Games), 1);
     }
 }

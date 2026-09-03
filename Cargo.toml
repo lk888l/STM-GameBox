@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/gamebox-core", "firmware", "tools/font-subset"]
+members = ["crates/gamebox-core", "crates/oled-driver", "firmware", "tools/font-subset"]
 default-members = ["firmware"]
 resolver = "3"
 
@@ -19,8 +19,8 @@ embassy-futures = "0.1.2"
 embassy-stm32 = { version = "0.6.0", features = ["defmt", "stm32f103c8", "time-driver-any", "unstable-pac"] }
 embassy-sync = { version = "0.8.0", features = ["defmt"] }
 embassy-time = { version = "0.5.1", features = ["defmt"] }
-embedded-graphics = "0.8.2"
 gamebox-core = { path = "crates/gamebox-core" }
+oled-driver = { path = "crates/oled-driver", default-features = false }
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 static_cell = "2"
 
@@ -34,7 +34,10 @@ debug = 1
 incremental = false
 lto = "fat"
 opt-level = "z"
-overflow-checks = true
+# The firmware's time/coordinate arithmetic uses explicit wrapping,
+# saturating, and checked operations where rollover matters. Keep the normal
+# embedded release policy here; global checks cost several KiB on Cortex-M3.
+overflow-checks = false
 
 [profile.test]
 opt-level = 2

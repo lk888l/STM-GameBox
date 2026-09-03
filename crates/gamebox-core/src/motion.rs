@@ -1,6 +1,6 @@
 //! Deterministic fixed-point motion primitives.
 
-use crate::settings::AnimationSpeed;
+use crate::settings::MotionLevel;
 
 const FRACTION_BITS: i32 = 8;
 const ONE: i32 = 1 << FRACTION_BITS;
@@ -38,19 +38,19 @@ impl Spring {
         self.velocity = 0;
     }
 
-    /// Advance one nominal 60 Hz simulation step.
+    /// Advance one fixed simulation substep.
     ///
-    /// Rendering may run at 30 Hz by calling this twice per frame. Keeping a
+    /// Rendering runs at 30 Hz and calls this four times per frame. Keeping a
     /// fixed step makes the visual result deterministic and host-testable.
-    pub fn step(&mut self, speed: AnimationSpeed) {
+    pub fn step(&mut self, speed: MotionLevel) {
         let (stiffness, damping) = match speed {
-            AnimationSpeed::Off => {
+            MotionLevel::Off => {
                 self.position = self.target;
                 self.velocity = 0;
                 return;
             }
-            AnimationSpeed::Slow => (34_i64, 206_i64),
-            AnimationSpeed::Fast => (62_i64, 184_i64),
+            MotionLevel::Reduced => (34_i64, 206_i64),
+            MotionLevel::Full => (62_i64, 184_i64),
         };
 
         let displacement = i64::from(self.target - self.position);
@@ -89,6 +89,8 @@ pub struct MenuMotion {
     pub scroll_y: Spring,
     /// Incoming-page horizontal offset.
     pub page_x: Spring,
+    /// Incoming home-card horizontal offset.
+    pub carousel_x: Spring,
 }
 
 impl Default for MenuMotion {
@@ -98,17 +100,19 @@ impl Default for MenuMotion {
             cursor_width: Spring::settled(52),
             scroll_y: Spring::settled(0),
             page_x: Spring::settled(0),
+            carousel_x: Spring::settled(0),
         }
     }
 }
 
 impl MenuMotion {
     /// Advance every spring by one fixed step.
-    pub fn step(&mut self, speed: AnimationSpeed) {
+    pub fn step(&mut self, speed: MotionLevel) {
         self.cursor_y.step(speed);
         self.cursor_width.step(speed);
         self.scroll_y.step(speed);
         self.page_x.step(speed);
+        self.carousel_x.step(speed);
     }
 
     /// Whether any menu motion remains active.
@@ -118,6 +122,7 @@ impl MenuMotion {
             || !self.cursor_width.is_settled()
             || !self.scroll_y.is_settled()
             || !self.page_x.is_settled()
+            || !self.carousel_x.is_settled()
     }
 }
 
@@ -130,7 +135,7 @@ mod tests {
         let mut spring = Spring::settled(0);
         spring.set_target(100);
         for _ in 0..180 {
-            spring.step(AnimationSpeed::Fast);
+            spring.step(MotionLevel::Full);
         }
         assert_eq!(spring.value(), 100);
         assert!(spring.is_settled());
@@ -140,7 +145,7 @@ mod tests {
     fn reduced_motion_snaps() {
         let mut spring = Spring::settled(-12);
         spring.set_target(87);
-        spring.step(AnimationSpeed::Off);
+        spring.step(MotionLevel::Off);
         assert_eq!(spring.value(), 87);
         assert!(spring.is_settled());
     }

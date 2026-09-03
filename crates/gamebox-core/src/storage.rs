@@ -1,11 +1,12 @@
-//! Versioned, checksummed persistent data codec.
+//! Versioned, checksummed persistent-data codec.
 
-use crate::settings::{AnimationSpeed, CursorStyle, Settings};
+use crate::settings::{Brightness, HomeHeaderMode, MotionLevel, Settings};
 
 /// Serialized record size; divisible by the STM32F103 Flash write size.
 pub const RECORD_SIZE: usize = 32;
 const MAGIC: [u8; 4] = *b"GBX2";
-const SCHEMA_VERSION: u8 = 1;
+const SCHEMA_VERSION: u8 = 2;
+const LEGACY_SCHEMA_VERSION: u8 = 1;
 const CRC_OFFSET: usize = 28;
 
 /// Application data retained across power cycles.
@@ -13,7 +14,7 @@ const CRC_OFFSET: usize = 28;
 pub struct PersistentData {
     /// User-facing settings.
     pub settings: Settings,
-    /// Best snake score achieved on this device.
+    /// Best Snake score achieved on this device.
     pub snake_high_score: u16,
 }
 
@@ -42,18 +43,13 @@ pub enum DecodeError {
 /// Serialize a record in a deterministic little-endian format.
 #[must_use]
 pub fn encode(data: PersistentData, generation: u32) -> [u8; RECORD_SIZE] {
-    let data = PersistentData {
-        settings: data.settings.normalized(),
-        snake_high_score: data.snake_high_score,
-    };
     let mut bytes = [0_u8; RECORD_SIZE];
     bytes[0..4].copy_from_slice(&MAGIC);
     bytes[4] = SCHEMA_VERSION;
     bytes[5] = u8::from(data.settings.sound_enabled);
-    bytes[6] = data.settings.animation_speed as u8;
-    bytes[7] = data.settings.cursor_style as u8;
-    bytes[8] = data.settings.contrast;
-    bytes[10..12].copy_from_slice(&data.settings.standby_refresh_seconds.to_le_bytes());
+    bytes[6] = data.settings.motion as u8;
+    bytes[7] = data.settings.brightness as u8;
+    bytes[8] = data.settings.home_header as u8;
     bytes[12..14].copy_from_slice(&data.snake_high_score.to_le_bytes());
     bytes[16..20].copy_from_slice(&generation.to_le_bytes());
     let crc = crc32(&bytes[..CRC_OFFSET]);
@@ -61,7 +57,7 @@ pub fn encode(data: PersistentData, generation: u32) -> [u8; RECORD_SIZE] {
     bytes
 }
 
-/// Decode and validate one candidate record.
+/// Decode one candidate record, including schema-v1 migration.
 pub fn decode(bytes: &[u8]) -> Result<StoredRecord, DecodeError> {
     if bytes.len() != RECORD_SIZE {
         return Err(DecodeError::WrongLength);
@@ -69,7 +65,7 @@ pub fn decode(bytes: &[u8]) -> Result<StoredRecord, DecodeError> {
     if bytes[..4] != MAGIC {
         return Err(DecodeError::BadMagic);
     }
-    if bytes[4] != SCHEMA_VERSION {
+    if bytes[4] != SCHEMA_VERSION && bytes[4] != LEGACY_SCHEMA_VERSION {
         return Err(DecodeError::UnsupportedSchema);
     }
     let expected = u32::from_le_bytes(
@@ -81,14 +77,34 @@ pub fn decode(bytes: &[u8]) -> Result<StoredRecord, DecodeError> {
         return Err(DecodeError::Corrupt);
     }
 
-    let settings = Settings {
-        sound_enabled: bytes[5] != 0,
-        animation_speed: AnimationSpeed::from_byte(bytes[6]),
-        cursor_style: CursorStyle::from_byte(bytes[7]),
-        contrast: bytes[8],
-        standby_refresh_seconds: u16::from_le_bytes([bytes[10], bytes[11]]),
-    }
-    .normalized();
+    let settings = if bytes[4] == SCHEMA_VERSION {
+        Settings {
+            sound_enabled: bytes[5] != 0,
+            motion: MotionLevel::from_byte(bytes[6]),
+            brightness: Brightness::from_byte(bytes[7]),
+            home_header: HomeHeaderMode::from_byte(bytes[8]),
+        }
+    } else {
+        // v1 stored Off/Slow/Fast animation and a raw contrast byte. Preserve
+        // intent while retiring cursor and standby-only settings.
+        let motion = match bytes[6] {
+            0 => MotionLevel::Off,
+            1 => MotionLevel::Reduced,
+            _ => MotionLevel::Full,
+        };
+        let brightness = match bytes[8] {
+            0..=0x43 => Brightness::Low,
+            0x44..=0x7f => Brightness::Medium,
+            0x80..=0xb7 => Brightness::High,
+            _ => Brightness::Max,
+        };
+        Settings {
+            sound_enabled: bytes[5] != 0,
+            motion,
+            brightness,
+            home_header: HomeHeaderMode::Time,
+        }
+    };
 
     Ok(StoredRecord {
         generation: u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]),
@@ -145,10 +161,9 @@ mod tests {
         let data = PersistentData {
             settings: Settings {
                 sound_enabled: false,
-                animation_speed: AnimationSpeed::Slow,
-                cursor_style: CursorStyle::Heart,
-                contrast: 0x72,
-                standby_refresh_seconds: 24,
+                motion: MotionLevel::Reduced,
+                brightness: Brightness::High,
+                home_header: HomeHeaderMode::Pet,
             },
             snake_high_score: 1234,
         };
@@ -159,6 +174,21 @@ mod tests {
                 data
             })
         );
+    }
+
+    #[test]
+    fn schema_one_is_migrated() {
+        let mut bytes = [0_u8; RECORD_SIZE];
+        bytes[..4].copy_from_slice(&MAGIC);
+        bytes[4] = LEGACY_SCHEMA_VERSION;
+        bytes[5] = 1;
+        bytes[6] = 1;
+        bytes[8] = 0x72;
+        let crc = crc32(&bytes[..CRC_OFFSET]);
+        bytes[CRC_OFFSET..].copy_from_slice(&crc.to_le_bytes());
+        let record = decode(&bytes).unwrap();
+        assert_eq!(record.data.settings.motion, MotionLevel::Reduced);
+        assert_eq!(record.data.settings.brightness, Brightness::Medium);
     }
 
     #[test]
