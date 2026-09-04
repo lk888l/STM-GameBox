@@ -26,7 +26,7 @@ InputTask 每 5 ms 只读取一次 `GPIOB->IDR`，将 8 个低有效物理引脚
 - `LongPress`：稳定按住达到 650 ms，只发送一次；释放后不会再发送 Click；
 - `Repeat`：LongPress 后按固定节拍发送，供菜单滚动或数值调整。
 
-UI 方向导航消费 `Pressed + Repeat`，因此双击分类不会拖慢方向反馈。确认动作消费 `Click/DoubleClick`，能够保证一次物理手势只触发一种语义动作。
+UI 方向导航消费 `Pressed + Repeat`。菜单、秒表、倒计时和校时中的 Enter/Jump 确认消费消抖后的 `Pressed`，不等待双击窗口；菜单切页时的确认保护会吞掉同一次按压后续的 Released/Click/DoubleClick/hold 事件，但允许下一次真实按压产生的新 `Pressed` 立即执行。Func 的菜单说明、全局快捷方式以及 Piano 的 Back 音符仍使用 Click/DoubleClick/LongPress 分类。
 
 ## 发布订阅与队列
 
@@ -39,4 +39,4 @@ InputService 同时提供两条有界输出路径：
 
 正常情况下 UI 每 33 ms 排空主队列，远高于按键事件产生速率。任一队列满时都丢弃最旧事件、保留最新事件并增加独立计数；System 页面可查看输入和 UART 的丢弃数。订阅表容量固定为 3，不支持运行期退订，因为所有服务与固件等寿命。
 
-主机测试覆盖机械抖动、单击延迟、双击互斥、长按/Repeat、释放后的 Click 抑制和 `uint32_t` 回绕。菜单测试还保证六个游戏入口完整且目标均被标记为游戏页。
+主机测试覆盖机械抖动、单击延迟、双击互斥、长按/Repeat、释放后的 Click 抑制、`uint32_t` 回绕，以及即时确认保护下的快速连续按压。菜单测试还保证六个游戏入口完整且目标均被标记为游戏页。

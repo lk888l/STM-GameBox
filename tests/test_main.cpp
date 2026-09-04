@@ -12,6 +12,7 @@
 #include "input/button_engine.hpp"
 #include "storage/settings_codec.hpp"
 #include "storage/calendar_codec.hpp"
+#include "ui/input_policy.hpp"
 #include "ui/menu_model.hpp"
 #include "ui/tween.hpp"
 
@@ -48,6 +49,21 @@ struct EventLog {
             }
         }
         return result;
+    }
+};
+
+struct ConfirmationHarness {
+    gamebox::ui::ConfirmationGuard guard{};
+    std::size_t confirmations{0U};
+
+    static void accept(void* const context, const gamebox::input::ButtonEvent& event)
+    {
+        auto& self = *static_cast<ConfirmationHarness*>(context);
+        if (self.guard.consume(event) || !gamebox::ui::isImmediateConfirmation(event)) {
+            return;
+        }
+        ++self.confirmations;
+        self.guard.begin(event.button);
     }
 };
 
@@ -136,6 +152,86 @@ void testTickWrap()
     sample(engine, log, true, 9U);
     check(log.countType(gamebox::input::ButtonEventType::pressed) == 1U,
           "debounce timing must survive uint32 wrap-around");
+}
+
+void testImmediateConfirmationPolicy()
+{
+    using gamebox::input::Button;
+    using gamebox::input::ButtonEvent;
+    using gamebox::input::ButtonEventType;
+
+    check(gamebox::ui::isImmediateConfirmation(
+              ButtonEvent{Button::enter, ButtonEventType::pressed, 20U, 0U}),
+          "Enter must confirm on its debounced pressed edge");
+    check(gamebox::ui::isImmediateConfirmation(
+              ButtonEvent{Button::jump, ButtonEventType::pressed, 20U, 0U}),
+          "Jump must confirm on its debounced pressed edge");
+    check(!gamebox::ui::isImmediateConfirmation(
+              ButtonEvent{Button::enter, ButtonEventType::click, 300U, 40U}),
+          "a delayed click must not repeat an immediate confirmation");
+    check(!gamebox::ui::isImmediateConfirmation(
+              ButtonEvent{Button::function, ButtonEventType::pressed, 20U, 0U}),
+          "Func must retain its click, double-click, and long-press semantics");
+}
+
+void testConfirmationGuard()
+{
+    using gamebox::input::Button;
+    using gamebox::input::ButtonEvent;
+    using gamebox::input::ButtonEventType;
+
+    gamebox::ui::ConfirmationGuard guard;
+    guard.begin(Button::enter);
+    check(!guard.consume(ButtonEvent{Button::jump, ButtonEventType::click, 40U, 20U}),
+          "the guard must not consume another button's event");
+    check(guard.consume(ButtonEvent{Button::enter, ButtonEventType::released, 40U, 20U}),
+          "the guarded release must not reach the opened view");
+    check(!guard.consume(ButtonEvent{Button::enter, ButtonEventType::pressed, 70U, 0U}),
+          "a new debounced press must remain immediately actionable");
+    check(guard.consume(
+              ButtonEvent{Button::enter, ButtonEventType::double_click, 95U, 25U}),
+          "the recognizer's double-click tail must be consumed");
+    check(!guard.consume(ButtonEvent{Button::enter, ButtonEventType::released, 100U, 30U}),
+          "the guard must clear after the recognizer tail");
+
+    guard.begin(Button::enter);
+    check(guard.consume(ButtonEvent{Button::enter, ButtonEventType::long_press, 670U, 650U}),
+          "a hold event from the activating press must be consumed");
+    check(guard.consume(ButtonEvent{Button::enter, ButtonEventType::released, 700U, 680U}),
+          "a long guarded press must clear on release");
+    check(!guard.consume(ButtonEvent{Button::enter, ButtonEventType::click, 980U, 680U}),
+          "a cleared long-press guard must not retain stale state");
+}
+
+void testFastRepeatedConfirmation()
+{
+    gamebox::input::ButtonEngine engine;
+    ConfirmationHarness harness;
+    const auto enter = gamebox::input::maskFor(gamebox::input::Button::enter);
+    const auto sample_confirmation = [&engine, &harness, enter](const bool pressed,
+                                                               const std::uint32_t now_ms) {
+        const gamebox::input::ButtonMask mask = pressed ? enter : 0U;
+        engine.sample(mask, now_ms, ConfirmationHarness::accept, &harness);
+    };
+
+    sample_confirmation(true, 0U);
+    sample_confirmation(true, 20U);
+    check(harness.confirmations == 1U,
+          "the first confirmation must run as soon as debounce completes");
+    sample_confirmation(false, 25U);
+    sample_confirmation(false, 45U);
+
+    // The first Click decision is still pending. A second physical press must
+    // still confirm the next menu level without waiting for that 280 ms tail.
+    sample_confirmation(true, 50U);
+    sample_confirmation(true, 70U);
+    check(harness.confirmations == 2U,
+          "a rapid second press must immediately confirm the next menu level");
+    sample_confirmation(false, 75U);
+    sample_confirmation(false, 95U);
+    sample_confirmation(false, 400U);
+    check(harness.confirmations == 2U,
+          "release and double-click tails must not cause a third confirmation");
 }
 
 void testTween()
@@ -536,6 +632,9 @@ int main()
     testDoubleClick();
     testLongPressAndRepeat();
     testTickWrap();
+    testImmediateConfirmationPolicy();
+    testConfirmationGuard();
+    testFastRepeatedConfirmation();
     testTween();
     testSnakeModel();
     testDinoModel();

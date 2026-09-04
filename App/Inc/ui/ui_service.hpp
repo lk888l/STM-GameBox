@@ -19,6 +19,7 @@
 #include "input/input_service.hpp"
 #include "platform/rtc_calendar.hpp"
 #include "storage/settings_store.hpp"
+#include "ui/input_policy.hpp"
 #include "ui/menu_model.hpp"
 #include "ui/tween.hpp"
 
@@ -169,6 +170,7 @@ private:
     bool clock_editing_{false};
 
     input::ButtonEvent last_event_{};
+    ConfirmationGuard confirmation_guard_{};
     std::uint32_t event_count_{0U};
     std::uint32_t boot_seed_{0U};
     etl::string<24> toast_{};

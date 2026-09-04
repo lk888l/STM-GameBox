@@ -50,13 +50,14 @@ DMA1 Channel 1/4/6、I2C1 EV/ER 和 USART1 中断优先级均为 6，满足 Free
 - 主页：方向键切换卡片，Enter 或 Jump 确认；
 - 列表：Up/Down 选择，Enter 或 Jump 确认，Back 返回；
 - Settings → Home Header：用 Left/Right、Enter 或 Jump 在 Time、Date、Pet、Title 间切换，断电保留；
+- 菜单页单击 Func：显示当前菜单项说明；
 - 长按 Func：在非游戏页面打开 Input Lab；
 - 双击 Func：在非游戏页面快速打开时钟；
 - 时钟：Enter/Jump 进入校时，Left/Right 选字段，Up/Down 调整，Enter/Jump 保存，Back/Func 取消；
 - 秒表：Enter/Jump 启停，Func 清零；
 - 倒计时：Up/Down 调分钟，Left/Right 调秒，Enter/Jump 启停，Func 恢复 5 分钟。
 
-Click 会在双击窗口结束后确认，以保证 Click 与 DoubleClick 互斥。方向导航和游戏操作使用 Pressed/Repeat，不会承受这段确认延迟。
+所有菜单和功能页的 Enter/Jump 确认都在 20 ms 消抖后的 Pressed 边沿执行；进行中的卡片或页面动画不会锁住输入。同一次物理按键的尾随事件会被拦截，但新的消抖 Pressed 仍可立即执行。仍需区分单击/双击的 Func 等操作继续等待 280 ms 窗口；方向导航和游戏操作使用 Pressed/Repeat。
 
 ## 引脚与片上资源
 
@@ -189,7 +190,7 @@ Arm GNU 15.2.1 的最近一次完整构建结果：
 
 | 配置 | Flash | SRAM | 说明 |
 |---|---:|---:|---|
-| Debug (`-Og -g3`) | 60,988 B / 64 KiB（93.06%） | 11,464 B / 20 KiB（55.98%） | 可调试、无 LTO |
-| Release (`-Os -flto`) | 44,132 B / 64 KiB（67.34%） | 11,448 B / 20 KiB（55.90%） | 推荐烧录 |
+| Debug (`-Og -g3`) | 61,160 B / 64 KiB（93.32%） | 11,464 B / 20 KiB（55.98%） | 可调试、无 LTO |
+| Release (`-Os -flto`) | 44,236 B / 64 KiB（67.50%） | 11,456 B / 20 KiB（55.94%） | 推荐烧录 |
 
 RAM 数字已包含链接器保留的 1 KiB 栈。Debug 的 Flash 余量较小，后续新增大字库或图片资源前应优先检查 Release 预算，并持续保留 Debug 可链接能力。

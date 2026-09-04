@@ -50,13 +50,14 @@ General UI controls:
 - Home: directional keys change cards; Enter or Jump confirms;
 - Lists: Up/Down selects, Enter or Jump confirms, Back returns;
 - Settings → Home Header: Left/Right, Enter, or Jump cycles Time, Date, Pet, and Title; the choice survives power loss;
+- Click Func on a menu page to show the selected item's description;
 - Hold Func on a non-game page to open Input Lab;
 - Double-click Func on a non-game page to open the clock;
 - Clock: Enter/Jump edits, Left/Right selects a field, Up/Down adjusts, Enter/Jump saves, Back/Func cancels;
 - Stopwatch: Enter/Jump starts or stops and Func resets;
 - Countdown: Up/Down adjusts minutes, Left/Right adjusts seconds, Enter/Jump starts or stops, and Func restores five minutes.
 
-Click is confirmed only after the double-click window, keeping Click and DoubleClick mutually exclusive. Direction navigation and game input consume Pressed/Repeat and therefore have no confirmation delay.
+Every Enter/Jump confirmation in menus and utility pages runs on the Pressed edge after the 20 ms debounce; an in-flight card or page transition never locks input. Tail events from that physical press are filtered, while a new debounced Pressed event remains immediately actionable. Operations that still distinguish a Func click from a double-click keep the 280 ms decision window; direction navigation and game input use Pressed/Repeat.
 
 ## Pin and On-Chip Resource Allocation
 
@@ -189,7 +190,7 @@ Latest full builds with Arm GNU 15.2.1:
 
 | Configuration | Flash | SRAM | Notes |
 |---|---:|---:|---|
-| Debug (`-Og -g3`) | 60,988 B / 64 KiB (93.06%) | 11,464 B / 20 KiB (55.98%) | Debuggable, no LTO |
-| Release (`-Os -flto`) | 44,132 B / 64 KiB (67.34%) | 11,448 B / 20 KiB (55.90%) | Recommended image |
+| Debug (`-Og -g3`) | 61,160 B / 64 KiB (93.32%) | 11,464 B / 20 KiB (55.98%) | Debuggable, no LTO |
+| Release (`-Os -flto`) | 44,236 B / 64 KiB (67.50%) | 11,456 B / 20 KiB (55.94%) | Recommended image |
 
 The SRAM figure includes the linker's 1 KiB stack reservation. Debug Flash headroom is now tighter, so large glyph or bitmap additions should be checked against Release first while preserving the ability to link a Debug image.

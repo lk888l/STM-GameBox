@@ -158,6 +158,7 @@ bool UiService::prepare(const std::uint32_t boot_seed)
     current_view_ = View::home;
     previous_view_ = current_view_;
     history_size_ = 0U;
+    confirmation_guard_.reset();
     page_spring_.snapTo(0);
     selection_spring_.snapTo(kFirstRowY);
     selection_width_spring_.snapTo(52);
@@ -294,6 +295,10 @@ void UiService::handleEvent(const input::ButtonEvent& event, const std::uint32_t
     // Motion is presentation state, not an input lock. Retargeting a transition
     // is preferable to silently discarding a valid button event.
 
+    if (confirmation_guard_.consume(event)) {
+        return;
+    }
+
     // Piano deliberately uses Back as its eighth note. A long Back press exits.
     if (current_view_ == View::piano) {
         handlePianoEvent(event, now_ms);
@@ -389,14 +394,17 @@ void UiService::handleMenuEvent(const input::ButtonEvent& event,
         }
     }
 
-    const bool activate =
-        (event.button == input::Button::enter || event.button == input::Button::jump) &&
-        (event.type == input::ButtonEventType::click ||
-         event.type == input::ButtonEventType::double_click);
-    if (activate) {
+    if (isImmediateConfirmation(event)) {
+        // Menu confirmation is edge-triggered. Click is deliberately delayed
+        // by the 280 ms double-click window, so it is unsuitable for primary
+        // navigation. Springs remain presentation state and can be retargeted.
+        if (current_view_ == View::home) {
+            carousel_spring_.snapTo(0);
+        }
+        confirmation_guard_.begin(event.button);
         activateSelection(now_ms);
-    } else if (event.button == input::Button::enter &&
-               event.type == input::ButtonEventType::long_press) {
+    } else if (event.button == input::Button::function &&
+               event.type == input::ButtonEventType::click) {
         showToast(entryAt(current_view_, selections_[viewIndex(current_view_)]).subtitle,
                   now_ms,
                   1800U);
@@ -729,10 +737,7 @@ void UiService::handlePianoEvent(const input::ButtonEvent& event,
 void UiService::handleStopwatchEvent(const input::ButtonEvent& event,
                                      const std::uint32_t now_ms)
 {
-    if (event.type != input::ButtonEventType::click) {
-        return;
-    }
-    if (event.button == input::Button::enter || event.button == input::Button::jump) {
+    if (isImmediateConfirmation(event)) {
         if (stopwatch_running_) {
             stopwatch_accumulated_ms_ += now_ms - stopwatch_started_ms_;
         } else {
@@ -740,7 +745,8 @@ void UiService::handleStopwatchEvent(const input::ButtonEvent& event,
         }
         stopwatch_running_ = !stopwatch_running_;
         feedbackPulse(now_ms);
-    } else if (event.button == input::Button::function) {
+    } else if (event.button == input::Button::function &&
+               event.type == input::ButtonEventType::click) {
         stopwatch_running_ = false;
         stopwatch_accumulated_ms_ = 0U;
         showToast("RESET", now_ms);
@@ -764,8 +770,7 @@ void UiService::handleTimerEvent(const input::ButtonEvent& event,
             countdown_seconds_ = countdown_seconds_ > 0U ? countdown_seconds_ - 1U : 0U;
         }
     }
-    if (event.type == input::ButtonEventType::click &&
-        (event.button == input::Button::enter || event.button == input::Button::jump)) {
+    if (isImmediateConfirmation(event)) {
         if (countdown_running_) {
             const std::int32_t remaining_ms =
                 static_cast<std::int32_t>(countdown_deadline_ms_ - now_ms);
@@ -790,8 +795,7 @@ void UiService::handleClockEvent(const input::ButtonEvent& event,
                                  const std::uint32_t now_ms)
 {
     if (!clock_editing_) {
-        if ((event.button == input::Button::enter || event.button == input::Button::jump) &&
-            event.type == input::ButtonEventType::click) {
+        if (isImmediateConfirmation(event)) {
             if (!calendar_.read(clock_edit_)) {
                 showToast("RTC ERROR", now_ms, 1800U);
                 return;
@@ -823,8 +827,7 @@ void UiService::handleClockEvent(const input::ButtonEvent& event,
         }
     }
 
-    if ((event.button == input::Button::enter || event.button == input::Button::jump) &&
-        event.type == input::ButtonEventType::click) {
+    if (isImmediateConfirmation(event)) {
         if (clock_field_ < 4U) {
             ++clock_field_;
         } else if (calendar_.set(clock_edit_)) {

@@ -37,7 +37,7 @@
 - Arm GNU Debug 与 Release 均在 `-Werror` 下链接成功；
 - GCC `-fanalyzer` 构建成功；已知 ETL `string_view` 建模噪声与故障停机循环类别显式隔离，其余诊断仍按错误处理；
 - post-build 无堆符号检查通过；
-- 本机测试覆盖按键、tick 回绕、Tween、六游戏菜单、五个游戏模型、Canvas、设置、日历和模块回滚；
+- 本机测试覆盖按键与即时确认保护、tick 回绕、Tween、六游戏菜单、五个游戏模型、Canvas、设置、日历和模块回滚；
 - OLED 菜单 BMP 预览已生成并人工检查布局；
 - ELF 符号表确认 DMA1 Channel 1/4/6、I2C1、USART1 和 HAL 完成回调由强符号实现，TIM3 handler 保持未启用；
 - ST-LINK Utility CLI 已通过 100 kHz SWD + connect-under-reset 写入 Release HEX，读回校验 OK；
