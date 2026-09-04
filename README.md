@@ -22,8 +22,7 @@ refactor/modernize-cpp 分支为功能基准，但按 Rust 的所有权、纯状
 - 主页：方向键切换卡片，Enter 或 Jump 确认；
 - 列表：Up/Down 选择，Enter 或 Jump 确认，Back 返回；
 - Settings：Left/Right、Enter 或 Jump 修改当前设置；
-- 非游戏页面长按 Func 打开 Input Lab，双击 Func 打开 Clock；
-- 长按 Enter 显示当前菜单项说明；
+- 菜单页单击 Func 显示当前项说明；非游戏页长按 Func 打开 Input Lab，双击 Func 打开 Clock；
 - Clock：Enter/Jump 开始校时，Left/Right 选字段，Up/Down 调整，
   Enter/Jump 逐字段前进并保存，Back 或 Func 取消；
 - Stopwatch：Enter/Jump 启停，Func 清零；
@@ -41,8 +40,10 @@ refactor/modernize-cpp 分支为功能基准，但按 Rust 的所有权、纯状
 | Pong 2P | 左玩家 Up/Down，右玩家 Jump/Func，Enter 开始/重开 |
 | Piano | Up、Left、Right、Down、Jump、Func、Enter、Back 对应 C4–C5；长按 Back 退出 |
 
-Click 要等 280 ms 双击窗口结束后才确认，因此 Click 与 DoubleClick 互斥；即时游戏操作
-使用 Pressed/Repeat。输入任务每 5 ms 采样，参数为 20 ms 去抖、650 ms 长按、
+所有菜单和功能页的 Enter/Jump 确认都在 20 ms 去抖后直接使用 Pressed；进行中的
+卡片或页面动画不会锁住输入。同一次物理按键后续的 Released/Click 会被吞掉，
+但新的一次消抖 Pressed 仍可立即执行。需要区分单击/双击的 Click 仍等待 280 ms 窗口；
+即时游戏操作使用 Pressed/Repeat。输入任务每 5 ms 采样，参数为 20 ms 去抖、650 ms 长按、
 长按后 110 ms 首次重复及 90 ms 重复周期。
 
 ## 硬件契约

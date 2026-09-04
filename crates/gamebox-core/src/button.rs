@@ -54,7 +54,7 @@ pub const fn key_mask(key: Key) -> u8 {
 /// High-level and raw-transition events emitted by a button state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gesture {
-    /// Debounced press transition. Games use this for immediate response.
+    /// Debounced press transition. Primary UI and game actions use this for immediate response.
     Pressed,
     /// Debounced release transition.
     Released,

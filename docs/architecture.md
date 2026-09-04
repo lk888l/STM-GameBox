@@ -49,8 +49,12 @@ GPIOB snapshot ─> ButtonBank
 所有 Channel、Signal、任务槽、画布和游戏容器都有编译期容量。运行期没有 allocator。
 
 ButtonBank 的 Click 使用物理释放时间作为诊断时间戳，但 App 另外接收当前处理时间。
-因此双击窗口到期后才执行的秒表、倒计时和 Toast 不会错误地提前 280 ms。两路队列都
-收到原始时间戳，UART 输出和 Input Lab 保持可诊断性。
+因此双击窗口到期后才执行的 Func 单击、Piano Back 音符和 Toast 不会错误地提前
+280 ms。两路队列都收到原始时间戳，UART 输出和 Input Lab 保持可诊断性。
+
+所有 Enter/Jump 主要操作在消抖后的 Pressed 边沿立即执行，不等待 Click。主页打开前
+会将进行中的轮播弹簧收敛到当前卡片，其他页面转换直接重定向。App 输入保护吞掉该次按键
+随后的 Released/Click/DoubleClick，但会放行后续新的 Pressed，既避免级联误触又不限制快速连续确认。
 
 ## 状态与副作用
 

@@ -580,13 +580,22 @@ impl App {
             }
         }
 
-        let activate = matches!(event.key, Key::Enter | Key::Jump)
-            && matches!(event.gesture, Gesture::Click | Gesture::DoubleClick);
-        if activate {
+        let primary_action = matches!(event.key, Key::Enter | Key::Jump);
+        if primary_action && event.gesture == Gesture::Pressed {
+            // Confirmation is an edge-triggered action throughout the menu
+            // hierarchy. Click is intentionally withheld for the 280 ms
+            // double-click window and is too slow for primary navigation.
+            // Existing springs are presentation only: open_view retargets a
+            // page transition, while Home also commits its current card.
+            if self.view == View::Home {
+                self.motion.carousel_x.snap_to(0);
+            }
+            self.begin_input_guard(event.key);
             return self.activate_selection(event.at_ms);
         }
-        if event.key == Key::Enter
-            && event.gesture == Gesture::LongPress
+
+        if event.key == Key::Function
+            && event.gesture == Gesture::Click
             && let Some(entry) = self.menu.selected_entry(self.view)
         {
             self.show_toast(entry.subtitle, event.at_ms, 1_800);
@@ -815,13 +824,10 @@ impl App {
     }
 
     fn handle_stopwatch(&mut self, event: KeyEvent) -> AppEffect {
-        if event.gesture != Gesture::Click {
-            return AppEffect::None;
-        }
-        if matches!(event.key, Key::Enter | Key::Jump) {
+        if event.gesture == Gesture::Pressed && matches!(event.key, Key::Enter | Key::Jump) {
             self.stopwatch.toggle(event.at_ms);
             self.request_feedback();
-        } else if event.key == Key::Function {
+        } else if event.gesture == Gesture::Click && event.key == Key::Function {
             self.stopwatch.reset();
             self.show_toast("RESET", event.at_ms, 1_200);
         }
@@ -842,7 +848,7 @@ impl App {
                 _ => {}
             }
         }
-        if event.gesture == Gesture::Click && matches!(event.key, Key::Enter | Key::Jump) {
+        if event.gesture == Gesture::Pressed && matches!(event.key, Key::Enter | Key::Jump) {
             if self.countdown_running {
                 self.countdown_seconds = self.countdown_remaining(event.at_ms);
                 self.countdown_running = false;
@@ -862,7 +868,7 @@ impl App {
 
     fn handle_clock(&mut self, event: KeyEvent) -> AppEffect {
         if !self.clock_editing {
-            if matches!(event.key, Key::Enter | Key::Jump) && event.gesture == Gesture::Click {
+            if matches!(event.key, Key::Enter | Key::Jump) && event.gesture == Gesture::Pressed {
                 if let Some(clock) = self.clock() {
                     self.clock_edit = clock;
                     self.clock_edit.seconds = 0;
@@ -901,7 +907,7 @@ impl App {
                 _ => {}
             }
         }
-        if matches!(event.key, Key::Enter | Key::Jump) && event.gesture == Gesture::Click {
+        if matches!(event.key, Key::Enter | Key::Jump) && event.gesture == Gesture::Pressed {
             if self.clock_field < 4 {
                 self.clock_field += 1;
                 self.request_feedback();
@@ -1035,18 +1041,30 @@ impl App {
             return false;
         }
         match event.gesture {
-            Gesture::LongPress => self.input_guard_was_long = true,
+            Gesture::Pressed => {
+                // A debounced second Pressed can only occur after the guarded
+                // physical press was released. Let that new action run at
+                // once, while retaining the guard for the recognizer's
+                // eventual Click or DoubleClick tail.
+                self.input_guard_was_long = false;
+                false
+            }
+            Gesture::LongPress => {
+                self.input_guard_was_long = true;
+                true
+            }
             Gesture::Released if self.input_guard_was_long => {
                 self.input_guard_key = None;
                 self.input_guard_was_long = false;
+                true
             }
             Gesture::Click | Gesture::DoubleClick => {
                 self.input_guard_key = None;
                 self.input_guard_was_long = false;
+                true
             }
-            Gesture::Pressed | Gesture::Released | Gesture::Repeat => {}
+            Gesture::Released | Gesture::Repeat => true,
         }
-        true
     }
 }
 
@@ -1076,6 +1094,8 @@ const fn wrap(value: u8, minimum: u8, maximum: u8, direction: i8) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use crate::button::ButtonBank;
+
     use super::*;
 
     fn event(key: Key, gesture: Gesture, at_ms: u32) -> KeyEvent {
@@ -1086,6 +1106,23 @@ mod tests {
         let mut app = App::new(0, PersistentData::default(), 1);
         app.tick(App::BOOT_DURATION_MS, 0);
         app
+    }
+
+    fn sample_key(
+        bank: &mut ButtonBank,
+        app: &mut App,
+        key: Key,
+        from_ms: u32,
+        through_ms: u32,
+        pressed: bool,
+    ) {
+        for now_ms in (from_ms..=through_ms).step_by(5) {
+            let mut keys = [false; Key::COUNT];
+            keys[key.index()] = pressed;
+            bank.update(now_ms, keys, |event| {
+                let _ = app.handle_event_at(event, now_ms);
+            });
+        }
     }
 
     #[test]
@@ -1101,7 +1138,7 @@ mod tests {
     #[test]
     fn menu_reaches_all_six_games() {
         let mut app = active_app();
-        app.handle_event(event(Key::Enter, Gesture::Click, 1_000));
+        app.handle_event(event(Key::Enter, Gesture::Pressed, 1_000));
         assert_eq!(app.view(), View::Games);
         for expected in [
             View::Dino,
@@ -1112,11 +1149,11 @@ mod tests {
             View::Piano,
         ] {
             let mut candidate = active_app();
-            candidate.handle_event(event(Key::Enter, Gesture::Click, 1_000));
+            candidate.handle_event(event(Key::Enter, Gesture::Pressed, 1_000));
             while candidate.menu().selected_entry(View::Games).unwrap().target != expected {
                 candidate.handle_event(event(Key::Down, Gesture::Pressed, 1_010));
             }
-            candidate.handle_event(event(Key::Enter, Gesture::Click, 1_020));
+            candidate.handle_event(event(Key::Enter, Gesture::Pressed, 1_020));
             assert_eq!(candidate.view(), expected);
         }
     }
@@ -1127,11 +1164,74 @@ mod tests {
         app.handle_event(event(Key::Right, Gesture::Pressed, 800));
         app.handle_event(event(Key::Right, Gesture::Pressed, 810));
         app.handle_event(event(Key::Right, Gesture::Pressed, 820));
-        app.handle_event(event(Key::Enter, Gesture::Click, 900));
+        app.handle_event(event(Key::Enter, Gesture::Pressed, 900));
         assert_eq!(app.view(), View::Settings);
-        let effect = app.handle_event(event(Key::Right, Gesture::Pressed, 950));
+        let effect = app.handle_event(event(Key::Enter, Gesture::Pressed, 950));
         assert!(matches!(effect, AppEffect::Persist(_)));
         assert!(!app.persistent_data().settings.sound_enabled);
+    }
+
+    #[test]
+    fn home_confirmation_is_immediate_and_does_not_leak_into_the_opened_view() {
+        let mut app = active_app();
+        app.handle_event(event(Key::Right, Gesture::Pressed, 800));
+        assert_eq!(app.view(), View::Home);
+        assert!(!app.motion().carousel_x.is_settled());
+
+        app.handle_event(event(Key::Enter, Gesture::Pressed, 810));
+        assert_eq!(app.view(), View::Tools);
+        assert!(app.motion().carousel_x.is_settled());
+
+        // Released and the delayed Click belong to the press that opened
+        // Tools. Neither may cascade into the selected Stopwatch entry.
+        app.handle_event(event(Key::Enter, Gesture::Released, 850));
+        app.handle_event_at(event(Key::Enter, Gesture::Click, 850), 1_130);
+        assert_eq!(app.view(), View::Tools);
+
+        app.handle_event(event(Key::Enter, Gesture::Pressed, 1_200));
+        assert_eq!(app.view(), View::Stopwatch);
+    }
+
+    #[test]
+    fn secondary_confirmation_accepts_a_new_press_before_the_old_click_tail() {
+        let mut app = active_app();
+        app.handle_event(event(Key::Enter, Gesture::Pressed, 800));
+        assert_eq!(app.view(), View::Games);
+
+        // The first release has happened, but its Click decision window is
+        // still open. A new debounced press must launch the selected game now.
+        app.handle_event(event(Key::Enter, Gesture::Released, 840));
+        app.handle_event(event(Key::Enter, Gesture::Pressed, 900));
+        assert_eq!(app.view(), View::Dino);
+
+        app.handle_event(event(Key::Enter, Gesture::Released, 940));
+        app.handle_event(event(Key::Enter, Gesture::DoubleClick, 940));
+        assert_eq!(app.view(), View::Dino);
+    }
+
+    #[test]
+    fn physical_fast_double_press_opens_one_level_per_press_without_waiting() {
+        let mut app = active_app();
+        let mut bank = ButtonBank::default();
+
+        sample_key(&mut bank, &mut app, Key::Enter, 800, 820, true);
+        assert_eq!(app.view(), View::Games);
+        sample_key(&mut bank, &mut app, Key::Enter, 825, 845, false);
+
+        sample_key(&mut bank, &mut app, Key::Enter, 850, 870, true);
+        assert_eq!(app.view(), View::Dino);
+        sample_key(&mut bank, &mut app, Key::Enter, 875, 895, false);
+
+        // The recognizer emits one DoubleClick after the second release. It is
+        // diagnostic tail data now, not a third confirmation.
+        assert_eq!(app.view(), View::Dino);
+    }
+
+    #[test]
+    fn jump_also_confirms_the_home_card_on_press() {
+        let mut app = active_app();
+        app.handle_event(event(Key::Jump, Gesture::Pressed, 800));
+        assert_eq!(app.view(), View::Games);
     }
 
     #[test]
@@ -1139,11 +1239,11 @@ mod tests {
         let mut app = active_app();
         app.set_clock_snapshot(Some(DateTime::default()));
         app.open_view(View::Clock, 1_000, true);
-        app.handle_event(event(Key::Enter, Gesture::Click, 1_100));
+        app.handle_event(event(Key::Enter, Gesture::Pressed, 1_100));
         assert!(app.clock_editing());
         app.handle_event(event(Key::Up, Gesture::Pressed, 1_110));
         for index in 0..5 {
-            let effect = app.handle_event(event(Key::Enter, Gesture::Click, 1_200 + index));
+            let effect = app.handle_event(event(Key::Enter, Gesture::Pressed, 1_200 + index));
             if index == 4 {
                 assert!(matches!(effect, AppEffect::SetClock(_)));
             }
@@ -1155,10 +1255,24 @@ mod tests {
     fn delayed_click_uses_processing_time_but_preserves_diagnostics_timestamp() {
         let mut app = active_app();
         app.open_view(View::Stopwatch, 900, true);
-        let click = event(Key::Enter, Gesture::Click, 1_000);
+        let click = event(Key::Function, Gesture::Click, 1_000);
         app.handle_event_at(click, 1_280);
-        assert_eq!(app.stopwatch_elapsed_ms(2_280), 1_000);
+        assert_eq!(app.toast(2_400), Some("RESET"));
         assert_eq!(app.last_event(), Some(click));
+    }
+
+    #[test]
+    fn primary_utility_actions_run_on_pressed_not_delayed_click() {
+        let mut app = active_app();
+        app.open_view(View::Stopwatch, 900, true);
+        app.handle_event(event(Key::Enter, Gesture::Pressed, 1_000));
+        assert!(app.stopwatch_running());
+        app.handle_event_at(event(Key::Enter, Gesture::Click, 1_040), 1_320);
+        assert!(app.stopwatch_running());
+
+        app.open_view(View::Countdown, 1_400, false);
+        app.handle_event(event(Key::Jump, Gesture::Pressed, 1_500));
+        assert!(app.countdown_running());
     }
 
     #[test]
