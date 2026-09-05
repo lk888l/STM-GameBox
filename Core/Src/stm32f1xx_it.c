@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include "adc.h"
 #include "i2c.h"
+#include "spi.h"
 #include "usart.h"
 /* USER CODE END Includes */
 
@@ -217,6 +218,17 @@ void DMA1_Channel4_IRQHandler(void)
   HAL_DMA_IRQHandler(&hdma_usart1_tx);
 }
 
+#if GAMEBOX_OLED_SPI
+void DMA1_Channel3_IRQHandler(void)
+{
+  HAL_DMA_IRQHandler(&hdma_spi1_tx);
+}
+
+void SPI1_IRQHandler(void)
+{
+  HAL_SPI_IRQHandler(&hspi1);
+}
+#else
 /**
   * @brief This function handles DMA1 channel 6 (I2C1 TX).
   */
@@ -240,6 +252,7 @@ void I2C1_ER_IRQHandler(void)
 {
   HAL_I2C_ER_IRQHandler(&hi2c1);
 }
+#endif
 
 /**
   * @brief This function handles USART1 global interrupt.

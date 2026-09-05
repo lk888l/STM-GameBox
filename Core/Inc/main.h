@@ -96,6 +96,21 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN Private defines */
 
+#ifndef GAMEBOX_OLED_SPI
+#define GAMEBOX_OLED_SPI 1
+#endif
+
+#define OLED_SCK_Pin GPIO_PIN_5
+#define OLED_SCK_GPIO_Port GPIOA
+#define OLED_MOSI_Pin GPIO_PIN_7
+#define OLED_MOSI_GPIO_Port GPIOA
+#define OLED_DC_Pin GPIO_PIN_6
+#define OLED_DC_GPIO_Port GPIOA
+#define OLED_CS_Pin GPIO_PIN_4
+#define OLED_CS_GPIO_Port GPIOA
+#define OLED_RESET_Pin GPIO_PIN_8
+#define OLED_RESET_GPIO_Port GPIOA
+
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

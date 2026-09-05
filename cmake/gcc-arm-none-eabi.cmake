@@ -41,12 +41,13 @@ set(CMAKE_ASM_FLAGS_INIT "${TARGET_FLAGS} -x assembler-with-cpp -MMD -MP")
 # However, most GCC toolchains do not support this option, which causes a compilation error; for this reason, the feature is disabled by default.
 # set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fcyclomatic-complexity")
 
-set(CMAKE_C_FLAGS_DEBUG "-Og -g3" CACHE STRING "C Debug flags" FORCE)
+set(CMAKE_C_FLAGS_DEBUG "-Os -g3 -flto" CACHE STRING "C Debug flags" FORCE)
 set(CMAKE_C_FLAGS_RELEASE "-Os -g0 -flto -DNDEBUG" CACHE STRING "C Release flags" FORCE)
-set(CMAKE_CXX_FLAGS_DEBUG "-Og -g3" CACHE STRING "C++ Debug flags" FORCE)
+set(CMAKE_CXX_FLAGS_DEBUG "-Os -g3 -flto" CACHE STRING "C++ Debug flags" FORCE)
 set(CMAKE_CXX_FLAGS_RELEASE "-Os -g0 -flto -DNDEBUG" CACHE STRING "C++ Release flags" FORCE)
 
 set(CMAKE_EXE_LINKER_FLAGS_INIT
     "${TARGET_FLAGS} -T \"${CMAKE_SOURCE_DIR}/STM32F103XX_FLASH.ld\" --specs=nano.specs -Wl,-Map=${CMAKE_PROJECT_NAME}.map -Wl,--gc-sections -Wl,--print-memory-usage")
 set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-flto" CACHE STRING "Release linker flags" FORCE)
+set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-flto" CACHE STRING "Debug linker flags" FORCE)
 set(TOOLCHAIN_LINK_LIBRARIES "m")

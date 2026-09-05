@@ -4,8 +4,11 @@ namespace gamebox::ui {
 
 namespace {
 
+#if GAMEBOX_OLED_SPI
+constexpr TickType_t kFramePeriod = pdMS_TO_TICKS(5U);
+#else
 constexpr TickType_t kFramePeriod = pdMS_TO_TICKS(33U);
-constexpr std::uint8_t kMotionStepsPerFrame = 4U;
+#endif
 constexpr std::uint32_t kUiStackDepth = 384U;
 constexpr std::uint8_t kVisibleRows = 3U;
 constexpr std::int16_t kFirstRowY = 14;
@@ -152,12 +155,15 @@ bool UiService::prepare(const std::uint32_t boot_seed)
     }
     audio_.setEnabled(sound_enabled_);
     constexpr std::uint8_t contrast[] = {0x28U, 0x60U, 0xA0U, 0xCFU};
-    if (!display_.setContrast(contrast[brightness_level_])) {
-        return false;
-    }
+    // The display caches this setting and retries an unavailable link in flush.
+    (void)display_.setContrast(contrast[brightness_level_]);
     current_view_ = View::home;
     previous_view_ = current_view_;
     history_size_ = 0U;
+    processed_events_.store(0U, std::memory_order_relaxed);
+    maximum_press_age_ms_.store(0U, std::memory_order_relaxed);
+    rendered_frames_.store(0U, std::memory_order_relaxed);
+    maximum_render_time_ms_.store(0U, std::memory_order_relaxed);
     confirmation_guard_.reset();
     page_spring_.snapTo(0);
     selection_spring_.snapTo(kFirstRowY);
@@ -168,9 +174,7 @@ bool UiService::prepare(const std::uint32_t boot_seed)
     snake_.reset(boot_seed_);
     canvas_.clear();
     canvas_.forceDirty();
-    if (!display_.flush(canvas_)) {
-        return false;
-    }
+    (void)display_.flush(canvas_);
     prepared_ = true;
     return true;
 }
@@ -210,12 +214,11 @@ SpringSpeed UiService::springSpeed() const
     return SpringSpeed::off;
 }
 
-void UiService::stepMotion()
+void UiService::stepMotion(const std::uint32_t now_ms)
 {
     const SpringSpeed speed = springSpeed();
-    // Embassy advances two fixed steps every 16 ms. Four steps per 33 ms OLED
-    // frame preserve that motion duration without exceeding the I2C frame budget.
-    for (std::uint8_t step = 0U; step < kMotionStepsPerFrame; ++step) {
+    const std::uint32_t steps = motion_clock_.advance(now_ms);
+    for (std::uint32_t step = 0U; step < steps; ++step) {
         page_spring_.step(speed);
         selection_spring_.step(speed);
         selection_width_spring_.step(speed);
@@ -226,17 +229,32 @@ void UiService::stepMotion()
 
 void UiService::run()
 {
-    TickType_t last_wake = xTaskGetTickCount();
+    motion_clock_.reset(toMilliseconds(xTaskGetTickCount()));
     while (!shouldExit()) {
-        const std::uint32_t now_ms = toMilliseconds(xTaskGetTickCount());
+        const TickType_t frame_started = xTaskGetTickCount();
         input::ButtonEvent event{};
-        while (input_.receive(event)) {
-            handleEvent(event, now_ms);
+        // Bound queue draining as well as rendering: arrivals during handling
+        // must not defer the frame or its mandatory scheduling point forever.
+        for (std::uint8_t handled = 0U; handled < 32U && input_.receive(event); ++handled) {
+            handleEvent(event, toMilliseconds(xTaskGetTickCount()));
         }
+        const std::uint32_t now_ms = toMilliseconds(xTaskGetTickCount());
         update(now_ms);
+        const TickType_t render_started = xTaskGetTickCount();
         render(now_ms);
+        const auto render_ms = toMilliseconds(xTaskGetTickCount() - render_started);
+        if (render_ms > maximum_render_time_ms_.load(std::memory_order_relaxed)) {
+            maximum_render_time_ms_.store(render_ms, std::memory_order_relaxed);
+        }
+        (void)rendered_frames_.fetch_add(1U, std::memory_order_relaxed);
         (void)display_.flush(canvas_);
-        (void)xTaskPeriodicDelay(&last_wake, kFramePeriod);
+
+        // Drop overdue frame ticks after slow transfers. A real block also
+        // lets lower-priority services run when an unchanged scene skips DMA.
+        TickType_t next_wake = frame_started;
+        if (xTaskPeriodicDelay(&next_wake, kFramePeriod) == pdFALSE) {
+            vTaskDelay(1U);
+        }
     }
 }
 
@@ -251,7 +269,7 @@ void UiService::feedbackPulse(const std::uint32_t now_ms)
 
 void UiService::update(const std::uint32_t now_ms)
 {
-    stepMotion();
+    stepMotion(now_ms);
 
     if (current_view_ == View::snake) {
         snake_.update(now_ms);
@@ -291,6 +309,13 @@ void UiService::handleEvent(const input::ButtonEvent& event, const std::uint32_t
 {
     last_event_ = event;
     ++event_count_;
+    (void)processed_events_.fetch_add(1U, std::memory_order_relaxed);
+    if (event.type == input::ButtonEventType::pressed) {
+        const std::uint32_t age_ms = now_ms - event.timestamp_ms;
+        if (age_ms > maximum_press_age_ms_.load(std::memory_order_relaxed)) {
+            maximum_press_age_ms_.store(age_ms, std::memory_order_relaxed);
+        }
+    }
 
     // Motion is presentation state, not an input lock. Retargeting a transition
     // is preferable to silently discarding a valid button event.
@@ -481,12 +506,14 @@ void UiService::setSetting(const Action action, const std::uint32_t now_ms)
     case Action::cycle_brightness: {
         const std::uint8_t next = static_cast<std::uint8_t>((brightness_level_ + 1U) % 4U);
         constexpr std::uint8_t contrast[] = {0x28U, 0x60U, 0xA0U, 0xCFU};
-        if (!display_.setContrast(contrast[next])) {
-            showToast("DISPLAY ERROR", now_ms, 1800U);
-            return;
-        }
         brightness_level_ = next;
-        showToast(settingValue(action), now_ms);
+        if (display_.setContrast(contrast[next])) {
+            showToast(settingValue(action), now_ms);
+        } else {
+            // OledTransport retries with this cached contrast. Persist the
+            // matching UI setting even if the screen is currently offline.
+            showToast("DISPLAY ERROR", now_ms, 1800U);
+        }
         break;
     }
     case Action::cycle_home_header: {
@@ -1342,7 +1369,7 @@ void UiService::renderSystem(const std::int16_t x_offset, const std::uint32_t no
     canvas_.drawText(static_cast<std::int16_t>(x_offset + 77), 24, "U:");
     canvas_.drawText(static_cast<std::int16_t>(x_offset + 92), 24,
                      unsignedText(diagnostics_.droppedEventCount(), value));
-    canvas_.drawText(static_cast<std::int16_t>(x_offset + 5), 34, "ERR  I:");
+    canvas_.drawText(static_cast<std::int16_t>(x_offset + 5), 34, "ERR  O:");
     canvas_.drawText(static_cast<std::int16_t>(x_offset + 47), 34,
                      unsignedText(display_.errorCount(), value));
     canvas_.drawText(static_cast<std::int16_t>(x_offset + 77), 34, "U:");

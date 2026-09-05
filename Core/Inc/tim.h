@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file    tim.h
-  * @brief   TIM3 DMA time base used by the passive buzzer tone generator.
+  * @brief   TIM2 DMA time base used by the passive buzzer tone generator.
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -16,10 +16,10 @@ extern "C" {
 
 #include "main.h"
 
-extern TIM_HandleTypeDef htim3;
-extern DMA_HandleTypeDef hdma_tim3_up;
+extern TIM_HandleTypeDef htim2;
+extern DMA_HandleTypeDef hdma_tim2_up;
 
-void MX_TIM3_Init(void);
+void MX_TIM2_Init(void);
 
 #ifdef __cplusplus
 }

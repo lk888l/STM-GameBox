@@ -180,9 +180,7 @@ void Canvas::horizontalLine(const std::int16_t x,
                             const std::int16_t width,
                             const PixelOperation operation)
 {
-    for (std::int16_t offset = 0; offset < width; ++offset) {
-        pixel(static_cast<std::int16_t>(x + offset), y, operation);
-    }
+    fillRectangle(x, y, width, 1, operation);
 }
 
 void Canvas::verticalLine(const std::int16_t x,
@@ -190,9 +188,7 @@ void Canvas::verticalLine(const std::int16_t x,
                           const std::int16_t height,
                           const PixelOperation operation)
 {
-    for (std::int16_t offset = 0; offset < height; ++offset) {
-        pixel(x, static_cast<std::int16_t>(y + offset), operation);
-    }
+    fillRectangle(x, y, 1, height, operation);
 }
 
 void Canvas::line(std::int16_t x0,
@@ -254,8 +250,51 @@ void Canvas::fillRectangle(const std::int16_t x,
                            const std::int16_t height,
                            const PixelOperation operation)
 {
-    for (std::int16_t row = 0; row < height; ++row) {
-        horizontalLine(x, static_cast<std::int16_t>(y + row), width, operation);
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+    const auto x_begin = static_cast<std::int16_t>(clamp(x, 0, kWidth));
+    const auto x_end = static_cast<std::int16_t>(
+        clamp(static_cast<std::int32_t>(x) + width, 0, kWidth));
+    const auto y_begin = static_cast<std::int16_t>(clamp(y, 0, kHeight));
+    const auto y_end = static_cast<std::int16_t>(
+        clamp(static_cast<std::int32_t>(y) + height, 0, kHeight));
+    if (x_begin >= x_end || y_begin >= y_end) {
+        return;
+    }
+
+    // SSD1306 stores eight vertical pixels in each byte. Fill a clipped span
+    // once per page instead of revisiting each byte for all eight pixel rows.
+    const auto first_page = static_cast<std::uint8_t>(y_begin / 8);
+    const auto last_page = static_cast<std::uint8_t>((y_end - 1) / 8);
+    for (std::uint8_t page = first_page; page <= last_page; ++page) {
+        const auto first_bit = static_cast<std::uint8_t>(page == first_page ? y_begin % 8 : 0);
+        const auto end_bit = static_cast<std::uint8_t>(page == last_page ? (y_end - 1) % 8 + 1 : 8);
+        const auto mask = static_cast<std::uint8_t>(
+            (0xFFU << first_bit) & (0xFFU >> (8U - end_bit)));
+        applyPageMask(page, x_begin, x_end, mask, operation);
+    }
+}
+
+void Canvas::applyPageMask(const std::uint8_t page,
+                           const std::int16_t x_begin,
+                           const std::int16_t x_end,
+                           const std::uint8_t mask,
+                           const PixelOperation operation)
+{
+    std::uint8_t* const row = &pixels_[static_cast<std::size_t>(page) * kWidth];
+    bool changed = false;
+    for (std::int16_t x = x_begin; x < x_end; ++x) {
+        const std::uint8_t before = row[x];
+        switch (operation) {
+        case PixelOperation::clear: row[x] &= static_cast<std::uint8_t>(~mask); break;
+        case PixelOperation::set: row[x] |= mask; break;
+        case PixelOperation::invert: row[x] ^= mask; break;
+        }
+        changed = changed || row[x] != before;
+    }
+    if (changed) {
+        dirty_pages_ |= static_cast<std::uint8_t>(1U << page);
     }
 }
 
@@ -345,17 +384,43 @@ void Canvas::drawText(std::int16_t x,
                       const etl::string_view text,
                       const bool inverted)
 {
+    if (y <= -static_cast<std::int16_t>(kFontGlyphHeight) || y >= kHeight) {
+        return;
+    }
+    // Floor division keeps the page/shift valid when a glyph enters from above.
+    const std::int16_t first_page = y < 0 ? -1 : static_cast<std::int16_t>(y / 8);
+    const auto shift = static_cast<std::uint8_t>(y - first_page * 8);
+    const auto glyph_mask = static_cast<std::uint16_t>(0xFFU << shift);
+    std::int32_t cursor = x;
     for (const char character : text) {
+        if (cursor >= kWidth) {
+            break;
+        }
         const std::uint8_t* const glyph = glyph6x8(character);
         for (std::uint8_t column = 0U; column < kFontGlyphWidth; ++column) {
-            for (std::uint8_t row = 0U; row < kFontGlyphHeight; ++row) {
-                const bool foreground = (glyph[column] & (1U << row)) != 0U;
-                pixel(static_cast<std::int16_t>(x + column),
-                      static_cast<std::int16_t>(y + row),
-                      foreground != inverted ? PixelOperation::set : PixelOperation::clear);
+            const std::int32_t screen_x = cursor + column;
+            if (screen_x < 0 || screen_x >= kWidth) {
+                continue;
+            }
+            const auto column_bits = inverted ? static_cast<std::uint8_t>(~glyph[column]) : glyph[column];
+            const auto glyph_bits = static_cast<std::uint16_t>(static_cast<std::uint32_t>(column_bits) << shift);
+            for (std::uint8_t offset = 0U; offset < 2U; ++offset) {
+                const auto page = static_cast<std::int16_t>(first_page + offset);
+                const auto page_mask = static_cast<std::uint8_t>(glyph_mask >> (offset * 8U));
+                if (page < 0 || page >= kPageCount || page_mask == 0U) {
+                    continue;
+                }
+                const auto bits = static_cast<std::uint8_t>(glyph_bits >> (offset * 8U));
+                std::uint8_t& target = pixels_[static_cast<std::size_t>(page) * kWidth +
+                                               static_cast<std::size_t>(screen_x)];
+                const auto after = static_cast<std::uint8_t>((target & ~page_mask) | bits);
+                if (target != after) {
+                    target = after;
+                    dirty_pages_ |= static_cast<std::uint8_t>(1U << page);
+                }
             }
         }
-        x = static_cast<std::int16_t>(x + kFontGlyphWidth);
+        cursor += kFontGlyphWidth;
     }
 }
 

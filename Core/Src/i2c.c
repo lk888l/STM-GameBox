@@ -38,6 +38,9 @@ void HAL_I2C_MspInit(I2C_HandleTypeDef* i2cHandle)
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_AFIO_CLK_ENABLE();
     __HAL_AFIO_REMAP_I2C1_ENABLE();
+    /* SWJ_CFG is write-only on F1: restore the intended debug mapping after
+       each MAPR update so PB4 stays a button and PA13/PA14 retain SWD. */
+    __HAL_AFIO_REMAP_SWJ_NOJTAG();
 
     GPIO_InitStruct.Pin = OLED_SCL_Pin | OLED_SDA_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
@@ -74,6 +77,7 @@ void HAL_I2C_MspDeInit(I2C_HandleTypeDef* i2cHandle)
     __HAL_RCC_I2C1_CLK_DISABLE();
     HAL_GPIO_DeInit(GPIOB, OLED_SCL_Pin | OLED_SDA_Pin);
     __HAL_AFIO_REMAP_I2C1_DISABLE();
+    __HAL_AFIO_REMAP_SWJ_NOJTAG();
     HAL_DMA_DeInit(i2cHandle->hdmatx);
     HAL_NVIC_DisableIRQ(I2C1_EV_IRQn);
     HAL_NVIC_DisableIRQ(I2C1_ER_IRQn);

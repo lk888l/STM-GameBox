@@ -74,6 +74,11 @@ public:
     void forceDirty() { dirty_pages_ = 0xFFU; }
 
 private:
+    void applyPageMask(std::uint8_t page,
+                       std::int16_t x_begin,
+                       std::int16_t x_end,
+                       std::uint8_t mask,
+                       PixelOperation operation);
     std::uint8_t pixels_[kBufferSize]{};
     std::uint8_t dirty_pages_{0xFFU};
 };

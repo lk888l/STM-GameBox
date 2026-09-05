@@ -29,6 +29,14 @@ public:
     {
         return dropped_events_.load(std::memory_order_relaxed);
     }
+    [[nodiscard]] std::uint32_t sampleCount() const
+    {
+        return samples_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] std::uint32_t maximumScanGapMs() const
+    {
+        return maximum_scan_gap_ms_.load(std::memory_order_relaxed);
+    }
     [[nodiscard]] std::uint32_t stackHeadroomBytes() const
     {
         return app::AppTask::stackHeadroomBytes();
@@ -53,6 +61,8 @@ private:
     alignas(ButtonEvent) std::uint8_t queue_storage_[kQueueLength * sizeof(ButtonEvent)]{};
     std::atomic<ButtonMask> stable_mask_{0U};
     std::atomic<std::uint32_t> dropped_events_{0U};
+    std::atomic<std::uint32_t> samples_{0U};
+    std::atomic<std::uint32_t> maximum_scan_gap_ms_{0U};
     ButtonEventObserver* observers_[kObserverCapacity]{};
 };
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -37,6 +38,22 @@ public:
     [[nodiscard]] etl::string_view name() const override { return "ui"; }
     /** Performs all HAL operations before the first FreeRTOS object is created. */
     [[nodiscard]] bool prepare(std::uint32_t boot_seed);
+    [[nodiscard]] std::uint32_t processedEventCount() const
+    {
+        return processed_events_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] std::uint32_t maximumPressAgeMs() const
+    {
+        return maximum_press_age_ms_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] std::uint32_t renderedFrameCount() const
+    {
+        return rendered_frames_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] std::uint32_t maximumRenderTimeMs() const
+    {
+        return maximum_render_time_ms_.load(std::memory_order_relaxed);
+    }
 
 protected:
     [[nodiscard]] bool onInitialize() override;
@@ -108,7 +125,7 @@ private:
     void persistSettings();
     [[nodiscard]] const char* settingValue(Action action) const;
     void refreshClock(std::uint32_t now_ms);
-    void stepMotion();
+    void stepMotion(std::uint32_t now_ms);
     void syncListMotion(View view);
     [[nodiscard]] SpringSpeed springSpeed() const;
     [[nodiscard]] std::int16_t selectionTargetY(View view) const;
@@ -144,6 +161,7 @@ private:
     Spring selection_width_spring_{52};
     Spring scroll_spring_{0};
     Spring carousel_spring_{0};
+    MotionClock motion_clock_{};
     bool page_forward_{true};
 
     MotionLevel motion_{MotionLevel::full};
@@ -172,6 +190,10 @@ private:
     input::ButtonEvent last_event_{};
     ConfirmationGuard confirmation_guard_{};
     std::uint32_t event_count_{0U};
+    std::atomic<std::uint32_t> processed_events_{0U};
+    std::atomic<std::uint32_t> maximum_press_age_ms_{0U};
+    std::atomic<std::uint32_t> rendered_frames_{0U};
+    std::atomic<std::uint32_t> maximum_render_time_ms_{0U};
     std::uint32_t boot_seed_{0U};
     etl::string<24> toast_{};
     std::uint32_t toast_until_ms_{0U};

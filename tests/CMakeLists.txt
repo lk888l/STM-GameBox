@@ -48,3 +48,42 @@ add_test(NAME gamebox_host_tests COMMAND gamebox_host_tests)
 
 add_executable(oled_preview oled_preview.cpp)
 target_link_libraries(oled_preview PRIVATE gamebox_pure)
+add_test(NAME oled_preview COMMAND oled_preview "${CMAKE_CURRENT_BINARY_DIR}/oled_menu_preview.bmp")
+
+foreach(case IN ITEMS valid checksum address eof after_eof entry data)
+    add_test(NAME firmware_hex_${case}
+        COMMAND "${CMAKE_COMMAND}" "-DCASE=${case}"
+            "-DSCRATCH=${CMAKE_CURRENT_BINARY_DIR}/hex-tests/${case}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/test_hex_validation.cmake")
+    if(NOT case STREQUAL "valid")
+        set_tests_properties(firmware_hex_${case} PROPERTIES WILL_FAIL TRUE)
+    endif()
+endforeach()
+
+# Exercise production transport/controller code with deterministic HAL/RTOS
+# timing, DMA faults and callback context, without requiring a connected board.
+foreach(interface IN ITEMS SPI I2C)
+    if(interface STREQUAL "SPI")
+        set(spi_enabled 1)
+    else()
+        set(spi_enabled 0)
+    endif()
+    add_executable(oled_transport_${interface}_tests
+        test_oled_transport.cpp
+        ../App/Src/platform/oled_transport.cpp
+        ../App/Src/display/ssd1306.cpp
+    )
+    target_include_directories(oled_transport_${interface}_tests BEFORE PRIVATE fakes)
+    target_compile_definitions(oled_transport_${interface}_tests PRIVATE GAMEBOX_OLED_SPI=${spi_enabled})
+    target_link_libraries(oled_transport_${interface}_tests PRIVATE gamebox_pure)
+    add_test(NAME oled_transport_${interface} COMMAND oled_transport_${interface}_tests)
+endforeach()
+
+foreach(case IN ITEMS lto free unresolved new_array delete_array)
+    add_test(NAME firmware_no_heap_${case}
+        COMMAND "${CMAKE_COMMAND}" "-DCASE=${case}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/test_no_heap.cmake")
+    if(NOT case STREQUAL "lto")
+        set_tests_properties(firmware_no_heap_${case} PROPERTIES WILL_FAIL TRUE)
+    endif()
+endforeach()

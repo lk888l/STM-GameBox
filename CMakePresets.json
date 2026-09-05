@@ -12,22 +12,53 @@
             "name": "Debug",
             "inherits": "default",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug"
+                "CMAKE_BUILD_TYPE": "Debug",
+                "GAMEBOX_OLED_INTERFACE": "SPI"
             }
         },
         {
             "name": "Release",
             "inherits": "default",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release"
+                "CMAKE_BUILD_TYPE": "Release",
+                "GAMEBOX_OLED_INTERFACE": "SPI"
             }
         },
         {
             "name": "Analyze",
             "inherits": "Debug",
             "cacheVariables": {
-                "GAMEBOX_ENABLE_ANALYZER": "ON"
+                "GAMEBOX_ENABLE_ANALYZER": "ON",
+                "GAMEBOX_ARTIFACT_DIR": "${sourceDir}/artifacts/analyze"
             }
+        },
+        {
+            "name": "Debug-SPI",
+            "inherits": "Debug"
+        },
+        {
+            "name": "Debug-I2C",
+            "inherits": "Debug",
+            "cacheVariables": { "GAMEBOX_OLED_INTERFACE": "I2C" }
+        },
+        {
+            "name": "Release-SPI",
+            "inherits": "Release"
+        },
+        {
+            "name": "Release-I2C",
+            "inherits": "Release",
+            "cacheVariables": { "GAMEBOX_OLED_INTERFACE": "I2C" }
+        },
+        {
+            "name": "Analyze-SPI",
+            "inherits": "Analyze",
+            "cacheVariables": { "GAMEBOX_ARTIFACT_DIR": "${sourceDir}/artifacts/analyze" }
+        },
+        {
+            "name": "Analyze-I2C",
+            "inherits": "Analyze-SPI",
+            "cacheVariables": { "GAMEBOX_OLED_INTERFACE": "I2C" }
         }
     ],
     "buildPresets": [
@@ -42,6 +73,30 @@
         {
             "name": "Analyze",
             "configurePreset": "Analyze"
+        },
+        {
+            "name": "Debug-SPI",
+            "configurePreset": "Debug-SPI"
+        },
+        {
+            "name": "Debug-I2C",
+            "configurePreset": "Debug-I2C"
+        },
+        {
+            "name": "Release-SPI",
+            "configurePreset": "Release-SPI"
+        },
+        {
+            "name": "Release-I2C",
+            "configurePreset": "Release-I2C"
+        },
+        {
+            "name": "Analyze-SPI",
+            "configurePreset": "Analyze-SPI"
+        },
+        {
+            "name": "Analyze-I2C",
+            "configurePreset": "Analyze-I2C"
         }
     ]
 }

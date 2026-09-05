@@ -20,6 +20,7 @@
 #include "main.h"
 #include "adc.h"
 #include "i2c.h"
+#include "spi.h"
 #include "rtc.h"
 #include "tim.h"
 #include "usart.h"
@@ -95,8 +96,12 @@ int main(void)
   MX_DMA_Init();
   MX_ADC1_Init();
   MX_RTC_Init();
+#if GAMEBOX_OLED_SPI
+  MX_SPI1_Init();
+#else
   MX_I2C1_Init();
-  MX_TIM3_Init();
+#endif
+  MX_TIM2_Init();
   MX_USART1_UART_Init();
 /* USER CODE BEGIN 2 */
   App_Bootstrap();

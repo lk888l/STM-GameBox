@@ -83,12 +83,36 @@ enum class SpringSpeed : std::uint8_t {
     fast,
 };
 
+/** Tracks fixed simulation steps independently from the OLED frame rate. */
+class MotionClock final {
+public:
+    static constexpr std::uint32_t kStepIntervalMs = 8U;
+    static constexpr std::uint32_t kMaximumCatchupSteps = 8U;
+
+    void reset(const std::uint32_t now_ms) { stepped_at_ms_ = now_ms; }
+
+    [[nodiscard]] std::uint32_t advance(const std::uint32_t now_ms)
+    {
+        const std::uint32_t due = (now_ms - stepped_at_ms_) / kStepIntervalMs;
+        const std::uint32_t steps = due < kMaximumCatchupSteps ? due : kMaximumCatchupSteps;
+        // Preserve fractional steps during normal rendering, but drop excessive
+        // backlog after a stalled bus or debugger halt so work stays bounded.
+        stepped_at_ms_ = due > kMaximumCatchupSteps
+                             ? now_ms
+                             : stepped_at_ms_ + steps * kStepIntervalMs;
+        return steps;
+    }
+
+private:
+    std::uint32_t stepped_at_ms_{0U};
+};
+
 /**
  * Deterministic one-dimensional damped spring in signed Q24.8 format.
  *
  * This is the C++ counterpart of the motion primitive used by the Embassy
- * firmware. The UI advances four fixed steps per 33 ms OLED frame to match the
- * Embassy cadence of two steps per 16 ms without using floating point.
+ * firmware. MotionClock schedules one fixed step per 8 ms of elapsed time,
+ * preserving animation speed across SPI/I2C frame rates without floating point.
  */
 class Spring final {
 public:

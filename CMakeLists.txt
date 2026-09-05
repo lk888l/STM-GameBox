@@ -33,6 +33,21 @@ message("Build type: " ${CMAKE_BUILD_TYPE})
 
 option(GAMEBOX_WARNINGS_AS_ERRORS "Treat handwritten C++ warnings as errors" ON)
 option(GAMEBOX_ENABLE_ANALYZER "Run GCC's path-sensitive static analyzer" OFF)
+set(GAMEBOX_OLED_INTERFACE "SPI" CACHE STRING "OLED transport: SPI or I2C")
+set_property(CACHE GAMEBOX_OLED_INTERFACE PROPERTY STRINGS SPI I2C)
+string(TOUPPER "${GAMEBOX_OLED_INTERFACE}" GAMEBOX_OLED_INTERFACE)
+if(GAMEBOX_OLED_INTERFACE STREQUAL "SPI")
+    set(GAMEBOX_OLED_SPI 1)
+elseif(GAMEBOX_OLED_INTERFACE STREQUAL "I2C")
+    set(GAMEBOX_OLED_SPI 0)
+else()
+    message(FATAL_ERROR "GAMEBOX_OLED_INTERFACE must be SPI or I2C")
+endif()
+# Directory scope deliberately covers HAL, CubeMX, RTOS, and application code.
+add_compile_definitions(GAMEBOX_OLED_SPI=${GAMEBOX_OLED_SPI})
+message(STATUS "OLED interface: ${GAMEBOX_OLED_INTERFACE}")
+set(GAMEBOX_ARTIFACT_DIR "${CMAKE_SOURCE_DIR}/artifacts/firmware" CACHE PATH
+    "Destination for validated firmware packages")
 
 if(GAMEBOX_ENABLE_ANALYZER AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     message(FATAL_ERROR "GAMEBOX_ENABLE_ANALYZER requires a GNU C++ compiler")
@@ -78,6 +93,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     App/Src/platform/entropy_source.cpp
     App/Src/platform/rtc_calendar.cpp
     App/Src/platform/buzzer_timer.cpp
+    App/Src/platform/oled_transport.cpp
 )
 
 # Add include paths
@@ -119,16 +135,4 @@ set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/stm32f1xx_it.c
         SysTick_Handler=CubeMX_SysTick_Handler
 )
 
-add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND}
-            -DNM=${CMAKE_NM}
-            -DELF=$<TARGET_FILE:${CMAKE_PROJECT_NAME}>
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyNoHeap.cmake
-    COMMAND ${CMAKE_OBJCOPY} -O ihex
-            $<TARGET_FILE:${CMAKE_PROJECT_NAME}>
-            ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_PROJECT_NAME}.hex
-    COMMAND ${CMAKE_OBJCOPY} -O binary
-            $<TARGET_FILE:${CMAKE_PROJECT_NAME}>
-            ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin
-    COMMENT "Generating HEX and BIN images"
-)
+include(cmake/FirmwareArtifacts.cmake)

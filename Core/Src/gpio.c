@@ -65,6 +65,16 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LED_1_GPIO_Port, &GPIO_InitStruct);
 
+#if GAMEBOX_OLED_SPI
+  /* Deselect the panel before any clock transition; hold reset inactive. */
+  HAL_GPIO_WritePin(GPIOA, OLED_CS_Pin | OLED_RESET_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOA, OLED_DC_Pin | OLED_SCK_Pin, GPIO_PIN_RESET);
+  GPIO_InitStruct.Pin = OLED_CS_Pin | OLED_RESET_Pin | OLED_DC_Pin | OLED_SCK_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+#endif
+
   /* All keys are active-low and sampled by the input task; no key ISR is used. */
   GPIO_InitStruct.Pin = BTN_RIGHT_Pin|BTN_DOWN_Pin|BTN_LEFT_Pin|BTN_UP_Pin
                           |BTN_JUMP_Pin|BTN_FUNC_Pin|BTN_ENTER_Pin|BTN_BACK_Pin;

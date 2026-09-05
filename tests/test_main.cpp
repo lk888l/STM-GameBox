@@ -1,9 +1,11 @@
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <limits>
 
 #include "app/app_manager.hpp"
 #include "display/canvas.hpp"
+#include "display/font6x8.hpp"
 #include "games/air_raid_game.hpp"
 #include "games/dino_game.hpp"
 #include "games/pong_game.hpp"
@@ -267,6 +269,46 @@ void testTween()
           "disabled motion must snap the spring to its target");
 }
 
+void testElapsedMotion()
+{
+    using gamebox::ui::MotionClock;
+    using gamebox::ui::Spring;
+    using gamebox::ui::SpringSpeed;
+    MotionClock frequent_clock;
+    MotionClock sparse_clock;
+    frequent_clock.reset(700U);
+    sparse_clock.reset(700U);
+    Spring frequent(128);
+    Spring sparse(128);
+    frequent.setTarget(0);
+    sparse.setTarget(0);
+    for (const std::uint32_t now_ms : {705U, 710U, 715U, 720U, 725U, 730U, 733U}) {
+        const auto steps = frequent_clock.advance(now_ms);
+        for (std::uint32_t step = 0U; step < steps; ++step) {
+            frequent.step(SpringSpeed::fast);
+        }
+    }
+    const auto sparse_steps = sparse_clock.advance(733U);
+    check(sparse_steps == 4U, "33 ms must advance four 8 ms spring steps");
+    for (std::uint32_t step = 0U; step < sparse_steps; ++step) {
+        sparse.step(SpringSpeed::fast);
+    }
+    check(frequent.value() == sparse.value() && frequent.settled() == sparse.settled(),
+          "SPI and I2C frame cadences must produce the same spring position");
+    check(frequent_clock.advance(739U) == 0U && frequent_clock.advance(740U) == 1U,
+          "motion must retain fractional time across irregular render ticks");
+
+    MotionClock stalled;
+    stalled.reset(0U);
+    check(stalled.advance(1000U) == 8U && stalled.advance(1000U) == 0U,
+          "a long pause must cap spring catchup and discard overdue steps");
+    check(stalled.advance(1007U) == 0U && stalled.advance(1008U) == 1U,
+          "motion must resume normally after dropping a long backlog");
+    stalled.reset(0xFFFFFFF8U);
+    check(stalled.advance(8U) == 2U,
+          "elapsed spring timing must remain correct over the 32-bit tick wrap");
+}
+
 void testSnakeModel()
 {
     gamebox::games::SnakeGame snake;
@@ -450,6 +492,146 @@ void testCanvas()
                 std::numeric_limits<std::int16_t>::max());
     check(canvas.dirtyPages() == 0U,
           "fully off-screen extreme line must be rejected without touching the canvas");
+}
+
+gamebox::display::Canvas patternedCanvas()
+{
+    gamebox::display::Canvas canvas;
+    for (std::int16_t y = 0; y < gamebox::display::Canvas::kHeight; ++y) {
+        for (std::int16_t x = 0; x < gamebox::display::Canvas::kWidth; ++x) {
+            const auto index = static_cast<std::uint32_t>(y / 8) * 128U +
+                               static_cast<std::uint32_t>(x);
+            const auto bits = static_cast<std::uint8_t>(index * 37U ^ (index / 8U));
+            if ((bits & (1U << static_cast<std::uint32_t>(y % 8))) != 0U) {
+                canvas.pixel(x, y);
+            }
+        }
+    }
+    canvas.clearDirty();
+    return canvas;
+}
+
+bool sameCanvas(const gamebox::display::Canvas& actual,
+                const gamebox::display::Canvas& expected)
+{
+    return std::memcmp(actual.data(), expected.data(), gamebox::display::Canvas::kBufferSize) == 0 &&
+           actual.dirtyPages() == expected.dirtyPages();
+}
+
+void referenceRectangle(gamebox::display::Canvas& canvas,
+                         const std::int16_t x,
+                         const std::int16_t y,
+                         const std::int16_t width,
+                         const std::int16_t height,
+                         const gamebox::display::PixelOperation operation)
+{
+    for (std::int16_t screen_y = 0; screen_y < gamebox::display::Canvas::kHeight; ++screen_y) {
+        for (std::int16_t screen_x = 0; screen_x < gamebox::display::Canvas::kWidth; ++screen_x) {
+            if (screen_x >= x && static_cast<std::int32_t>(screen_x) < static_cast<std::int32_t>(x) + width &&
+                screen_y >= y && static_cast<std::int32_t>(screen_y) < static_cast<std::int32_t>(y) + height) {
+                canvas.pixel(screen_x, screen_y, operation);
+            }
+        }
+    }
+}
+
+void testNativePageSpans()
+{
+    using gamebox::display::PixelOperation;
+    const auto initial = patternedCanvas();
+    std::uint32_t seed = 17U;
+    auto random = [&seed](const std::uint32_t range, const std::int16_t offset) {
+        seed = seed * 1664525U + 1013904223U;
+        return static_cast<std::int16_t>(static_cast<std::int32_t>((seed >> 8U) % range) - offset);
+    };
+    bool all_match = true;
+    for (std::uint32_t trial = 0U; trial < 300U; ++trial) {
+        const auto x = random(170U, 20);
+        const auto y = random(100U, 20);
+        const auto width = random(180U, 5);
+        const auto height = random(100U, 5);
+        for (const auto operation : {PixelOperation::clear, PixelOperation::set, PixelOperation::invert}) {
+            auto actual = initial;
+            auto expected = initial;
+            actual.fillRectangle(x, y, width, height, operation);
+            referenceRectangle(expected, x, y, width, height, operation);
+            all_match = all_match && sameCanvas(actual, expected);
+
+            actual = initial;
+            expected = initial;
+            actual.horizontalLine(x, y, width, operation);
+            referenceRectangle(expected, x, y, width, 1, operation);
+            all_match = all_match && sameCanvas(actual, expected);
+
+            actual = initial;
+            expected = initial;
+            actual.verticalLine(x, y, height, operation);
+            referenceRectangle(expected, x, y, 1, height, operation);
+            all_match = all_match && sameCanvas(actual, expected);
+        }
+    }
+    check(all_match, "native page fills and lines must match pixel rendering and dirty flags with clipping");
+
+    for (const std::int16_t x : {std::int16_t{-32768}, std::int16_t{-1}, std::int16_t{0}, std::int16_t{32767}}) {
+        for (const std::int16_t y : {std::int16_t{-32768}, std::int16_t{-1}, std::int16_t{0}, std::int16_t{32767}}) {
+            auto actual = initial;
+            auto expected = initial;
+            actual.fillRectangle(x, y, 32767, 32767, PixelOperation::invert);
+            referenceRectangle(expected, x, y, 32767, 32767, PixelOperation::invert);
+            check(sameCanvas(actual, expected), "extreme fill extents must clip without coordinate wrap");
+        }
+    }
+    gamebox::display::Canvas unchanged;
+    unchanged.clearDirty();
+    unchanged.fillRectangle(0, 0, 128, 64, PixelOperation::clear);
+    check(unchanged.dirtyPages() == 0U, "an unchanged page fill must not trigger a transfer");
+}
+
+void testNativePageText()
+{
+    using gamebox::display::PixelOperation;
+    const auto initial = patternedCanvas();
+    constexpr std::int16_t positions_x[] = {-32768, -6, -1, 0, 120, 125, 128, 32767};
+    constexpr std::int16_t positions_y[] = {-32768, -8, -7, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 57, 63, 64, 32767};
+    bool all_match = true;
+    for (std::uint16_t code = 0U; code <= 255U; ++code) {
+        const char character = static_cast<char>(code);
+        const auto* const glyph = gamebox::display::glyph6x8(character);
+        for (const auto x : positions_x) {
+            for (const auto y : positions_y) {
+                for (const bool inverted : {false, true}) {
+                    auto actual = initial;
+                    auto expected = initial;
+                    actual.drawText(x, y, {&character, 1U}, inverted);
+                    for (std::uint8_t column = 0U; column < gamebox::display::kFontGlyphWidth; ++column) {
+                        for (std::uint8_t row = 0U; row < gamebox::display::kFontGlyphHeight; ++row) {
+                            const auto screen_x = static_cast<std::int32_t>(x) + column;
+                            const auto screen_y = static_cast<std::int32_t>(y) + row;
+                            if (screen_x < 0 || screen_x >= gamebox::display::Canvas::kWidth ||
+                                screen_y < 0 || screen_y >= gamebox::display::Canvas::kHeight) {
+                                continue;
+                            }
+                            const bool foreground = (glyph[column] & (1U << row)) != 0U;
+                            expected.pixel(static_cast<std::int16_t>(screen_x),
+                                           static_cast<std::int16_t>(screen_y),
+                                           foreground != inverted ? PixelOperation::set : PixelOperation::clear);
+                        }
+                    }
+                    all_match = all_match && sameCanvas(actual, expected);
+                }
+            }
+        }
+    }
+    check(all_match, "native glyph writes must match every character, page alignment, inversion and clip edge");
+
+    gamebox::display::Canvas canvas;
+    canvas.drawText(-6, 3, "AB");
+    gamebox::display::Canvas expected;
+    expected.drawText(0, 3, "B");
+    check(sameCanvas(canvas, expected), "text must advance past a clipped leading glyph");
+    canvas.clearDirty();
+    canvas.drawText(-6, 3, "AB");
+    check(canvas.dirtyPages() == 0U, "redrawing identical text must preserve clean pages");
 }
 
 void testSettingsCodec()
@@ -636,6 +818,7 @@ int main()
     testConfirmationGuard();
     testFastRepeatedConfirmation();
     testTween();
+    testElapsedMotion();
     testSnakeModel();
     testDinoModel();
     testAirRaidModel();
@@ -644,6 +827,8 @@ int main()
     testGameMenu();
     testSettingsMenu();
     testCanvas();
+    testNativePageSpans();
+    testNativePageText();
     testSettingsCodec();
     testCalendarCodec();
     testModuleLifecycle();

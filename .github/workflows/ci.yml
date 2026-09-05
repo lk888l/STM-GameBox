@@ -12,7 +12,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
+  host:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Configure native tests
+        run: cmake -S tests -B build/HostTests -DCMAKE_BUILD_TYPE=Debug
+      - name: Build native tests
+        run: cmake --build build/HostTests --config Debug --parallel
+      - name: Test models, display transports, artifact parser, and OLED preview
+        run: ctest --test-dir build/HostTests -C Debug --output-on-failure
+
+  firmware:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -25,25 +44,22 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends gcc-arm-none-eabi ninja-build
+          sudo apt-get install --yes --no-install-recommends gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib ninja-build
 
-      - name: Build and test
-        shell: pwsh
-        run: ./scripts/verify.ps1
+      - name: Build and verify SPI and I2C, Debug and Release
+        run: cmake -DMODE=BUILD -P scripts/verify.cmake
 
       - name: Run GCC static analyzer
-        run: |
-          cmake --preset Analyze
-          cmake --build --preset Analyze
+        run: cmake -DMODE=CHECK -P scripts/verify.cmake
 
-      - name: Upload firmware and OLED preview
+      - name: Test cached exports and reject corrupted artifacts
+        run: cmake -P scripts/test_artifacts.cmake
+
+      - name: Upload validated firmware packages
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: stm32-gamebox-build
           path: |
-            build/Release/stm32103c8t6_game-box.elf
-            build/Release/stm32103c8t6_game-box.hex
-            build/Release/stm32103c8t6_game-box.bin
-            build/HostTests/oled_menu_preview.bmp
+            artifacts/firmware/
           if-no-files-found: error
           retention-days: 14

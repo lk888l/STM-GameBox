@@ -25,7 +25,11 @@ private:
     Application();
 
     AppManager manager_{};
+#if GAMEBOX_OLED_SPI
+    display::Ssd1306 display_{hspi1};
+#else
     display::Ssd1306 display_{hi2c1};
+#endif
     input::InputService input_{};
     audio::AudioService audio_{};
     diagnostics::UartDmaService diagnostics_{huart1};

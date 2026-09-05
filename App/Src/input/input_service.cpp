@@ -25,6 +25,8 @@ bool InputService::onInitialize()
     engine_.reset();
     stable_mask_.store(0U, std::memory_order_relaxed);
     dropped_events_.store(0U, std::memory_order_relaxed);
+    samples_.store(0U, std::memory_order_relaxed);
+    maximum_scan_gap_ms_.store(0U, std::memory_order_relaxed);
     queue_ = xQueueCreateStatic(kQueueLength,
                                 sizeof(ButtonEvent),
                                 queue_storage_,
@@ -101,13 +103,25 @@ void InputService::enqueue(const ButtonEvent& event)
 
 void InputService::run()
 {
-    TickType_t last_wake = xTaskGetTickCount();
+    TickType_t sampled_at = xTaskGetTickCount();
     while (!shouldExit()) {
         const TickType_t now = xTaskGetTickCount();
+        const auto gap_ms = static_cast<std::uint32_t>(now - sampled_at);
+        if (gap_ms > maximum_scan_gap_ms_.load(std::memory_order_relaxed)) {
+            maximum_scan_gap_ms_.store(gap_ms, std::memory_order_relaxed);
+        }
+        sampled_at = now;
         const auto now_ms = static_cast<std::uint32_t>(now);
         engine_.sample(readHardware(), now_ms, enqueueFromEngine, this);
         stable_mask_.store(engine_.stableMask(), std::memory_order_relaxed);
-        (void)xTaskPeriodicDelay(&last_wake, kScanPeriod);
+        (void)samples_.fetch_add(1U, std::memory_order_relaxed);
+
+        // Missed GPIO samples cannot be reconstructed. Schedule from the real
+        // sample time and block even if processing exceeded the scan period.
+        TickType_t next_wake = now;
+        if (xTaskPeriodicDelay(&next_wake, kScanPeriod) == pdFALSE) {
+            vTaskDelay(1U);
+        }
     }
 }
 
