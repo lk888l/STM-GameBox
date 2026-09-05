@@ -1,5 +1,6 @@
 [toolchain]
 channel = "1.96.0"
 profile = "minimal"
+components = ["llvm-tools-preview", "clippy", "rustfmt"]
 targets = ["thumbv7m-none-eabi"]
 

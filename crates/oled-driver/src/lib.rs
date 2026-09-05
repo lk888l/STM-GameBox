@@ -42,8 +42,10 @@ pub use framebuffer::{
     PageBuffer, PageCanvas,
 };
 pub use report::{FlushReport, TransferReport};
-pub use ssd1306::{DisplaySize, PowerMode, Ssd1306, Ssd1306Config};
-pub use transport::{I2cTransport, TransportParts};
+pub use ssd1306::{DisplayClock, DisplaySize, PowerMode, Ssd1306, Ssd1306Config};
+pub use transport::{
+    I2cTransport, SpiTransport, SpiTransportError, SpiTransportParts, TransportParts,
+};
 
 #[cfg(feature = "async")]
 pub use reset::reset_async;

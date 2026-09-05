@@ -6,44 +6,41 @@ use core::sync::atomic::Ordering;
 
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_futures::select::{Either, select};
+use embassy_futures::{
+    select::{Either, select},
+    yield_now,
+};
 use embassy_stm32::{
     adc::{self, Adc, SampleTime},
     bind_interrupts, dma,
     flash::Flash,
     gpio::{Input, Level, Output, Pull, Speed},
-    i2c, peripherals, usart,
+    peripherals, usart,
 };
-use embassy_time::{Duration, Instant, Ticker, Timer, with_timeout};
+use embassy_time::{Instant, Ticker, Timer};
 use gamebox_core::{
     App, AppEffect, Gesture, RenderSchedule, SystemStats,
     ui::{FRAME_BYTES, UiRenderer},
 };
 use gamebox_f103_firmware::{
     board,
-    platform::{rtc::RtcClock, storage::SettingsJournal},
+    platform::{oled, rtc::RtcClock, storage::SettingsJournal},
     services::{
-        BuzzerCue, DROPPED_KEY_EVENTS, DROPPED_UART_EVENTS, HELD_KEYS, KEY_EVENTS, OLED_ERRORS,
-        OLED_TRANSFERS, SAVE_REQUEST, STORAGE_ERRORS, UART_ERRORS, try_play,
+        BuzzerCue, DROPPED_KEY_EVENTS, DROPPED_UART_EVENTS, HELD_KEYS, KEY_EVENTS,
+        KEY_EVENTS_PROCESSED, MAX_KEY_PRESS_AGE_MS, MAX_RENDER_TIME_US, OLED_ERRORS,
+        OLED_TRANSFERS, RENDERED_FRAMES, SAVE_REQUEST, STORAGE_ERRORS, UART_ERRORS, try_play,
     },
     tasks::{button_task, buzzer_task, storage_task, uart_task},
-};
-use oled_driver::{
-    BufferedDisplay, DISPLAY_BYTES, DISPLAY_PAGES, DISPLAY_WIDTH, FullBuffer, I2cTransport, Ssd1306,
 };
 use panic_probe as _;
 use static_cell::StaticCell;
 
 bind_interrupts!(struct Irqs {
-    I2C1_EV => i2c::EventInterruptHandler<peripherals::I2C1>;
-    I2C1_ER => i2c::ErrorInterruptHandler<peripherals::I2C1>;
     DMA1_CHANNEL4 => dma::InterruptHandler<peripherals::DMA1_CH4>;
-    DMA1_CHANNEL6 => dma::InterruptHandler<peripherals::DMA1_CH6>;
-    DMA1_CHANNEL7 => dma::InterruptHandler<peripherals::DMA1_CH7>;
     ADC1_2 => adc::InterruptHandler<peripherals::ADC1>;
 });
 
-static FRONT_MEMORY: StaticCell<[u8; DISPLAY_BYTES]> = StaticCell::new();
+static FRONT_MEMORY: StaticCell<[u8; FRAME_BYTES]> = StaticCell::new();
 static SCENE_MEMORY: StaticCell<[u8; FRAME_BYTES]> = StaticCell::new();
 
 #[embassy_executor::main]
@@ -75,43 +72,54 @@ async fn main(spawner: Spawner) {
         mixed ^ (Instant::now().as_ticks() as u32).rotate_left(13)
     };
 
-    let oled_i2c = i2c::I2c::new(
-        p.I2C1,
-        p.PB8,
-        p.PB9,
-        p.DMA1_CH6,
-        p.DMA1_CH7,
-        Irqs,
-        board::oled_i2c_config(),
-    );
-    let transport = I2cTransport::new(oled_i2c, board::OLED_ADDRESS)
-        .expect("the board OLED address is a valid seven-bit address");
-    let front = FullBuffer::new(FRONT_MEMORY.init([0; DISPLAY_BYTES]))
-        .expect("front framebuffer geometry is fixed at 128x64");
+    // This composition-root resource selection is the only interface-specific
+    // code outside the OLED adapter. Unselected pins and DMA remain untouched.
+    #[cfg(not(feature = "oled-i2c"))]
+    let oled_resources = oled::Resources {
+        spi: p.SPI1,
+        sck: p.PA5,
+        mosi: p.PA7,
+        dc: p.PA6,
+        cs: p.PA4,
+        reset: p.PA8,
+        tx_dma: p.DMA1_CH3,
+    };
+    #[cfg(feature = "oled-i2c")]
+    let oled_resources = oled::Resources {
+        i2c: p.I2C1,
+        scl: p.PB8,
+        sda: p.PB9,
+        tx_dma: p.DMA1_CH6,
+        rx_dma: p.DMA1_CH7,
+    };
+    let mut display = oled::Oled::new(oled_resources, FRONT_MEMORY.init([0; FRAME_BYTES]));
     let scene = SCENE_MEMORY.init([0; FRAME_BYTES]);
-    let mut display = BufferedDisplay::new(Ssd1306::default(), transport, front)
-        .expect("SSD1306 geometry matches the framebuffer");
+    defmt::info!(
+        "OLED interface: {}, {} Hz",
+        oled::INTERFACE,
+        oled::BUS_FREQUENCY_HZ
+    );
 
     let mut startup_backoff_ms = 25_u64;
     loop {
-        match with_timeout(board::OLED_OPERATION_TIMEOUT, display.init_async()).await {
-            Ok(Ok(report)) => {
+        match display.init().await {
+            Ok(report) => {
                 defmt::info!("SSD1306 ready: {} data bytes", report.data_bytes);
                 break;
             }
-            Ok(Err(_)) => {
+            Err(oled::Error::Driver(_)) => {
                 defmt::warn!(
-                    "SSD1306 initialization bus error; retry in {} ms",
+                    "SSD1306 bus initialization error; retry in {} ms",
                     startup_backoff_ms
                 );
-                board::recover_oled_i2c();
+                display.recover_bus();
             }
-            Err(_) => {
+            Err(oled::Error::Timeout) => {
                 defmt::warn!(
                     "SSD1306 initialization timed out; retry in {} ms",
                     startup_backoff_ms
                 );
-                board::recover_oled_i2c();
+                display.recover_bus();
             }
         }
         Timer::after_millis(startup_backoff_ms).await;
@@ -119,17 +127,12 @@ async fn main(spawner: Spawner) {
     }
 
     let desired_contrast = persistent.settings.brightness.contrast();
-    let mut applied_contrast = match with_timeout(
-        board::OLED_OPERATION_TIMEOUT,
-        display.set_contrast_async(desired_contrast),
-    )
-    .await
-    {
-        Ok(Ok(_)) => Some(desired_contrast),
-        Ok(Err(_)) | Err(_) => {
+    let mut applied_contrast = match display.set_contrast(desired_contrast).await {
+        Ok(_) => Some(desired_contrast),
+        Err(_) => {
             OLED_ERRORS.fetch_add(1, Ordering::Relaxed);
             defmt::warn!("initial OLED contrast command failed or timed out");
-            board::recover_oled_i2c();
+            display.recover_bus();
             None
         }
     };
@@ -168,7 +171,7 @@ async fn main(spawner: Spawner) {
     let mut app = App::new(now_ms, persistent, entropy);
     app.set_clock_snapshot(rtc.as_ref().and_then(|clock| clock.now().ok()));
 
-    let mut frame_tick = Ticker::every(Duration::from_millis(33));
+    let mut frame_tick = Ticker::every(oled::FRAME_INTERVAL);
     let mut next_rtc_read_ms = now_ms.wrapping_add(250);
     let mut render_needed = true;
     let mut panel_online = true;
@@ -182,6 +185,11 @@ async fn main(spawner: Spawner) {
             Either::First(event) => {
                 let view_before = app.view();
                 let processed_at_ms = Instant::now().as_millis() as u32;
+                KEY_EVENTS_PROCESSED.fetch_add(1, Ordering::Relaxed);
+                if event.gesture == Gesture::Pressed {
+                    MAX_KEY_PRESS_AGE_MS
+                        .fetch_max(processed_at_ms.wrapping_sub(event.at_ms), Ordering::Relaxed);
+                }
                 let effect = app.handle_event_at(event, processed_at_ms);
                 defmt::debug!(
                     "key: key={} gesture={} held={} ms at={} view={}=>{}",
@@ -201,6 +209,10 @@ async fn main(spawner: Spawner) {
                 render_needed |= event.gesture != Gesture::Released;
             }
             Either::Second(()) => {
+                // A slow render or bus recovery must not build an unbounded
+                // backlog of immediately-ready ticks. Advance from now;
+                // animation and game state already use elapsed wall time.
+                frame_tick.reset();
                 let now_ms = Instant::now().as_millis() as u32;
                 let input_drops = DROPPED_KEY_EVENTS.load(Ordering::Relaxed);
                 let uart_drops = DROPPED_UART_EVENTS.load(Ordering::Relaxed);
@@ -237,18 +249,13 @@ async fn main(spawner: Spawner) {
         let now_ms = Instant::now().as_millis() as u32;
         let wanted_contrast = app.persistent_data().settings.brightness.contrast();
         if panel_online && applied_contrast != Some(wanted_contrast) {
-            match with_timeout(
-                board::OLED_OPERATION_TIMEOUT,
-                display.set_contrast_async(wanted_contrast),
-            )
-            .await
-            {
-                Ok(Ok(_)) => applied_contrast = Some(wanted_contrast),
-                Ok(Err(_)) | Err(_) => {
+            match display.set_contrast(wanted_contrast).await {
+                Ok(_) => applied_contrast = Some(wanted_contrast),
+                Err(_) => {
                     OLED_ERRORS.fetch_add(1, Ordering::Relaxed);
                     panel_online = false;
                     retry_at_ms = now_ms.wrapping_add(retry_backoff_ms);
-                    board::recover_oled_i2c();
+                    display.recover_bus();
                     defmt::warn!("OLED contrast transfer failed; entering recovery backoff");
                 }
             }
@@ -256,41 +263,47 @@ async fn main(spawner: Spawner) {
 
         let retry_due = !panel_online && deadline_reached(now_ms, retry_at_ms);
         if render_needed {
+            let render_started = Instant::now();
             renderer.draw(scene, &app, now_ms);
-            display
-                .buffer_mut()
-                .blit_native(0, 0, DISPLAY_WIDTH, DISPLAY_PAGES, scene)
-                .expect("full-scene blit dimensions are compile-time constants");
+            display.stage_frame(scene);
+            MAX_RENDER_TIME_US.fetch_max(
+                render_started
+                    .elapsed()
+                    .as_micros()
+                    .min(u64::from(u32::MAX)) as u32,
+                Ordering::Relaxed,
+            );
+            RENDERED_FRAMES.fetch_add(1, Ordering::Relaxed);
         }
 
-        if panel_online && render_needed {
-            match with_timeout(board::OLED_OPERATION_TIMEOUT, display.flush_async()).await {
-                Ok(Ok(report)) => {
+        let frame_changed = display.is_dirty();
+        if panel_online && render_needed && frame_changed {
+            match display.flush().await {
+                Ok(report) => {
                     if report.regions != 0 {
-                        OLED_TRANSFERS.fetch_add(u32::from(report.regions), Ordering::Relaxed);
+                        OLED_TRANSFERS.fetch_add(1, Ordering::Relaxed);
                     }
                 }
-                Ok(Err(_)) | Err(_) => {
+                Err(_) => {
                     OLED_ERRORS.fetch_add(1, Ordering::Relaxed);
                     panel_online = false;
                     retry_at_ms = now_ms.wrapping_add(retry_backoff_ms);
-                    board::recover_oled_i2c();
+                    display.recover_bus();
                     defmt::warn!("OLED transfer failed or timed out; entering recovery backoff");
                 }
             }
         } else if retry_due {
-            board::recover_oled_i2c();
-            match with_timeout(board::OLED_OPERATION_TIMEOUT, display.reinitialize_async()).await {
-                Ok(Ok(report)) => {
+            match display.reinitialize().await {
+                Ok(report) => {
                     if report.regions != 0 {
-                        OLED_TRANSFERS.fetch_add(u32::from(report.regions), Ordering::Relaxed);
+                        OLED_TRANSFERS.fetch_add(1, Ordering::Relaxed);
                     }
                     panel_online = true;
                     applied_contrast = None;
                     retry_backoff_ms = 50;
                     defmt::info!("OLED link recovered and framebuffer resent");
                 }
-                Ok(Err(_)) | Err(_) => {
+                Err(_) => {
                     OLED_ERRORS.fetch_add(1, Ordering::Relaxed);
                     retry_at_ms = now_ms.wrapping_add(retry_backoff_ms);
                     retry_backoff_ms = (retry_backoff_ms * 2).min(2_000);
@@ -298,6 +311,10 @@ async fn main(spawner: Spawner) {
             }
         }
         render_needed = false;
+        // An unchanged scene skips DMA, and an overdue ticker is also Ready.
+        // Explicitly yield even on that path so the physical button sampler,
+        // buzzer and UART can run between frames or queued input events.
+        yield_now().await;
     }
 }
 

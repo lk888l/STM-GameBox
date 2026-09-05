@@ -83,6 +83,29 @@ pub enum PowerMode {
     ExternalVcc,
 }
 
+/// SSD1306 display-clock presets.
+///
+/// Both presets use the fastest divide ratio (one). The oscillator setting
+/// controls how quickly the controller scans its panel independently of the
+/// host interface speed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayClock {
+    /// Datasheet reset oscillator setting (`0x80`).
+    #[default]
+    Default,
+    /// Highest programmable oscillator setting (`0xf0`).
+    Maximum,
+}
+
+impl DisplayClock {
+    const fn register_value(self) -> u8 {
+        match self {
+            Self::Default => 0x80,
+            Self::Maximum => 0xf0,
+        }
+    }
+}
+
 /// Configuration shared by all supported SSD1306 panel profiles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ssd1306Config {
@@ -94,6 +117,8 @@ pub struct Ssd1306Config {
     pub invert: bool,
     /// Panel power source.
     pub power_mode: PowerMode,
+    /// Internal panel scan-clock preset.
+    pub display_clock: DisplayClock,
 }
 
 impl Default for Ssd1306Config {
@@ -103,6 +128,7 @@ impl Default for Ssd1306Config {
             rotation: Rotation::Rotate0,
             invert: false,
             power_mode: PowerMode::InternalChargePump,
+            display_clock: DisplayClock::Default,
         }
     }
 }
@@ -147,6 +173,7 @@ impl Default for Ssd1306 {
                 rotation: Rotation::Rotate0,
                 invert: false,
                 power_mode: PowerMode::InternalChargePump,
+                display_clock: DisplayClock::Default,
             },
             size: DisplaySize::Display128x64,
         }
@@ -175,7 +202,7 @@ impl Controller for Ssd1306 {
         commands.extend(&[
             0xae, // Display off
             0xd5,
-            0x80, // Clock divide
+            self.config.display_clock.register_value(),
             0xa8,
             (self.size.height() - 1) as u8,
             0xd3,
@@ -250,5 +277,24 @@ impl Controller for Ssd1306 {
 
     fn encode_invert(&self, invert: bool, commands: &mut CommandBuffer) -> Result<(), ConfigError> {
         commands.push(if invert { 0xa7 } else { 0xa6 })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maximum_display_clock_is_encoded_in_initialization() {
+        let controller = Ssd1306::new(Ssd1306Config {
+            display_clock: DisplayClock::Maximum,
+            ..Ssd1306Config::default()
+        })
+        .unwrap();
+        let mut commands = CommandBuffer::new();
+
+        controller.encode_init(&mut commands).unwrap();
+
+        assert_eq!(&commands.as_slice()[..3], &[0xae, 0xd5, 0xf0]);
     }
 }

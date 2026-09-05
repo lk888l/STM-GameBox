@@ -24,7 +24,7 @@ pub const DISPLAY_BYTES: usize = DISPLAY_WIDTH * DISPLAY_PAGES;
 /// Number of bytes required by the exact dirty bitmap.
 pub const DIRTY_BYTES: usize = DISPLAY_BYTES / 8;
 
-/// Policy used to turn exact dirty bytes into efficient I²C transfers.
+/// Policy used to turn exact dirty bytes into efficient bus transfers.
 ///
 /// This is an immutable, validated value object. Construct it with [`Self::new`]
 /// so an invalid threshold cannot enter the display pipeline.

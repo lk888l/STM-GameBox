@@ -40,8 +40,9 @@ impl Spring {
 
     /// Advance one fixed simulation substep.
     ///
-    /// Rendering runs at 30 Hz and calls this four times per frame. Keeping a
-    /// fixed step makes the visual result deterministic and host-testable.
+    /// The application schedules one substep per 8 ms of monotonic time.
+    /// Keeping the integration step fixed makes the visual result independent
+    /// of render jitter and host-testable.
     pub fn step(&mut self, speed: MotionLevel) {
         let (stiffness, damping) = match speed {
             MotionLevel::Off => {

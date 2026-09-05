@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/gamebox-core", "crates/oled-driver", "firmware", "tools/font-subset"]
+members = ["crates/gamebox-core", "crates/oled-driver", "firmware", "tools/font-subset", "tools/xtask"]
 default-members = ["firmware"]
 resolver = "3"
 
@@ -26,7 +26,14 @@ static_cell = "2"
 
 [profile.dev]
 debug = 2
-opt-level = 1
+# `cargo build` must also fit the 62 KiB firmware region. Keep full debugger
+# symbols, but use the same size optimizations and arithmetic policy as release.
+opt-level = "z"
+codegen-units = 1
+incremental = false
+lto = "fat"
+overflow-checks = false
+debug-assertions = false
 
 [profile.release]
 codegen-units = 1
@@ -41,3 +48,18 @@ overflow-checks = false
 
 [profile.test]
 opt-level = 2
+codegen-units = 16
+incremental = true
+lto = false
+overflow-checks = true
+debug-assertions = true
+
+# The native task runner does not share the MCU's size/debugging constraints.
+[profile.xtask]
+inherits = "dev"
+opt-level = 0
+codegen-units = 16
+incremental = true
+lto = false
+overflow-checks = true
+debug-assertions = true

@@ -15,8 +15,8 @@ use crate::{
     board,
     platform::storage::SettingsJournal,
     services::{
-        BUZZER_CUES, BuzzerCue, HELD_KEYS, SAVE_REQUEST, STORAGE_ERRORS, UART_ERRORS, UART_EVENTS,
-        publish_key_event,
+        BUTTON_SAMPLES, BUZZER_CUES, BuzzerCue, HELD_KEYS, MAX_BUTTON_SCAN_GAP_US, SAVE_REQUEST,
+        STORAGE_ERRORS, UART_ERRORS, UART_EVENTS, publish_key_event,
     },
 };
 
@@ -25,12 +25,25 @@ use crate::{
 pub async fn button_task(inputs: [Input<'static>; 8]) {
     let mut bank = ButtonBank::default();
     let mut ticker = Ticker::every(Duration::from_millis(5));
+    let mut sampled_at = Instant::now();
     loop {
         ticker.next().await;
-        let now_ms = Instant::now().as_millis() as u32;
+        let now = Instant::now();
+        MAX_BUTTON_SCAN_GAP_US.fetch_max(
+            now.duration_since(sampled_at)
+                .as_micros()
+                .min(u64::from(u32::MAX)) as u32,
+            Ordering::Relaxed,
+        );
+        sampled_at = now;
+        // Missed physical samples cannot be reconstructed by repeatedly
+        // sampling today's GPIO level. Drop overdue ticks after a stall.
+        ticker.reset_at(now);
+        let now_ms = now.as_millis() as u32;
         let pressed = board::sample_buttons(&inputs);
         bank.update(now_ms, pressed, publish_key_event);
         HELD_KEYS.store(bank.stable_mask(), Ordering::Relaxed);
+        BUTTON_SAMPLES.fetch_add(1, Ordering::Relaxed);
     }
 }
 

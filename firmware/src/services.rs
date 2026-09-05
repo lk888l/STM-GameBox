@@ -38,6 +38,18 @@ pub static SAVE_REQUEST: Signal<CriticalSectionRawMutex, PersistentData> = Signa
 pub static BUZZER_CUES: Channel<CriticalSectionRawMutex, BuzzerCue, 4> = Channel::new();
 /// Debounced held-key bitmask.
 pub static HELD_KEYS: AtomicU8 = AtomicU8::new(0);
+/// Completed physical input samples, observable through SWD without logging.
+pub static BUTTON_SAMPLES: AtomicU32 = AtomicU32::new(0);
+/// Longest interval between physical samples, including debugger halts.
+pub static MAX_BUTTON_SCAN_GAP_US: AtomicU32 = AtomicU32::new(0);
+/// Semantic events consumed by the UI owner.
+pub static KEY_EVENTS_PROCESSED: AtomicU32 = AtomicU32::new(0);
+/// Longest UI delivery delay for an immediate debounced press.
+pub static MAX_KEY_PRESS_AGE_MS: AtomicU32 = AtomicU32::new(0);
+/// Completed scene renders, including unchanged frames that skip the bus.
+pub static RENDERED_FRAMES: AtomicU32 = AtomicU32::new(0);
+/// Longest synchronous scene render and framebuffer staging time.
+pub static MAX_RENDER_TIME_US: AtomicU32 = AtomicU32::new(0);
 /// Number of overwritten UI input events.
 pub static DROPPED_KEY_EVENTS: AtomicU32 = AtomicU32::new(0);
 /// Number of overwritten UART observer events.
